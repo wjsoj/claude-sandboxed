@@ -8,6 +8,7 @@ node_modules/
 
 # Cache
 .cache/
+.sandbox/
 
 # Local binaries
 .local/
