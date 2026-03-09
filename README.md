@@ -1,23 +1,23 @@
-# Claude Code Sandboxed
+# Claude Sandbox
 
-使用 bubblewrap 在沙箱环境中运行 Claude Code，保护系统文件安全的同时保持工作区完全可读写。
+Run Claude Code in a sandboxed environment using bubblewrap. Protects system files while keeping your workspace fully readable and writable.
 
-## 特性
+## Features
 
-- 🔒 隔离系统文件，防止意外修改
-- ✅ 工作区完全可读写，保留所有工作记录
-- 🛠️ 自动挂载用户工具（uv, cargo, npm 等）
-- 🧹 自动清理临时文件
-- 💾 可选的会话历史保存功能
-- 🔑 从环境变量或配置文件读取 API 凭证
+- 🔒 Isolate system files from accidental modifications
+- ✅ Full read/write access to workspace
+- 🛠️ Auto-mount user tools (uv, cargo, npm, etc.)
+- 🧹 Automatic cleanup of temporary files
+- 💾 Optional session history export
+- 🔑 Read API credentials from environment or config file
 
-## 依赖
+## Dependencies
 
-- `bubblewrap` - 沙箱运行时
+- `bubblewrap` - Sandbox runtime
 - `claude` - Claude Code CLI
-- `jq` - JSON 处理（可选，用于配置解析）
+- `jq` - JSON processor (optional, for config parsing)
 
-### 安装依赖
+### Install Dependencies
 
 **Arch Linux:**
 ```bash
@@ -34,124 +34,123 @@ sudo apt install bubblewrap jq
 sudo dnf install bubblewrap jq
 ```
 
-## 一键安装
+## Quick Install
 
-### 国际用户
+### International Users
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/wjsoj/claude-sandboxed/main/claude-sandboxed -o ~/.local/bin/claude-sandbox && chmod +x ~/.local/bin/claude-sandbox
+curl -fsSL https://raw.githubusercontent.com/wjsoj/claude-sandboxed/main/claude-sandbox -o ~/.local/bin/claude-sandbox && chmod +x ~/.local/bin/claude-sandbox
 ```
 
-### 中国大陆用户（推荐）
+### China Mainland Users (Recommended)
 
 ```bash
-curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/wjsoj/claude-sandboxed/main/claude-sandboxed -o ~/.local/bin/claude-sandbox && chmod +x ~/.local/bin/claude-sandbox
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/wjsoj/claude-sandboxed/main/claude-sandbox -o ~/.local/bin/claude-sandbox && chmod +x ~/.local/bin/claude-sandbox
 ```
 
-安装完成后，直接使用 `claude-sandbox` 命令即可。
+After installation, use the `claude-sandbox` command directly.
 
+## Usage
 
-## 使用方法
-
-### 基本用法
+### Basic Usage
 
 ```bash
-# 在当前目录启动沙箱化的 Claude Code
+# Launch sandboxed Claude Code in current directory
 claude-sandbox
 
-# 使用提示词
-claude-sandbox -p "帮我初始化一个 Python 项目"
+# Use with prompt
+claude-sandbox -p "Initialize a Python project"
 
-# 保存会话历史
-claude-sandbox --save -p "创建一个 React 组件"
+# Save session history
+claude-sandbox --save -p "Create a React component"
 ```
 
-### 选项
+### Options
 
-- `--save` - 保存会话历史到 `.sandbox/output-时间戳.jsonl`
-- `--with-skills` - 加载 Claude Code 技能
-- `--with-plugins` - 加载 Claude Code 插件
-- `--full` - 同时加载技能和插件
+- `--save` - Save session history to `.sandbox/output-timestamp.jsonl`
+- `--with-skills` - Load Claude Code skills
+- `--with-plugins` - Load Claude Code plugins
+- `--full` - Load both skills and plugins
 
-### API 配置
+### API Configuration
 
-脚本会按以下优先级读取 API 配置：
+The script reads API configuration in the following priority:
 
-1. 环境变量：`ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`
-2. 配置文件：`~/.claude/settings.json` 中的 `env` 字段
+1. Environment variables: `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`
+2. Config file: `env` field in `~/.claude/settings.json`
 
-**使用环境变量：**
+**Using environment variables:**
 ```bash
 export ANTHROPIC_BASE_URL="https://api.anthropic.com"
 export ANTHROPIC_AUTH_TOKEN="your_token_here"
 claude-sandbox
 ```
 
-## 沙箱隔离说明
+## Sandbox Isolation
 
-### 可读写区域
-- `/workspace` - 当前工作目录（完全可读写）
+### Read/Write Areas
+- `/workspace` - Current working directory (fully writable)
 
-### 只读区域
-- `/usr`, `/etc` - 系统文件
-- `/usr/local/bin` - 用户工具（uv, cargo 等）
-- `/home/sandbox/.local` - Claude Code 二进制文件
-- `/home/sandbox/.claude` - Claude Code 配置（临时）
+### Read-Only Areas
+- `/usr`, `/etc` - System files
+- `/usr/local/bin` - User tools (uv, cargo, etc.)
+- `/home/sandbox/.local` - Claude Code binary
+- `/home/sandbox/.claude` - Claude Code config (temporary)
 
-### 隔离的命名空间
-- 进程命名空间（PID）
-- IPC 命名空间
-- UTS 命名空间
+### Isolated Namespaces
+- Process namespace (PID)
+- IPC namespace
+- UTS namespace
 
-### 共享资源
-- 网络命名空间（用于 API 访问）
-- 用户命名空间（避免权限问题）
+### Shared Resources
+- Network namespace (for API access)
+- User namespace (avoid permission issues)
 
-## 目录结构
+## Directory Structure
 
-运行后会在工作区创建 `.sandbox/` 目录：
+After running, a `.sandbox/` directory is created in the workspace:
 
 ```
 .sandbox/
-├── output-20260310-123456.jsonl  # 会话历史（使用 --save 时）
-└── temp-*                         # 临时文件（自动清理）
+├── output-20260310-123456.jsonl  # Session history (with --save)
+└── temp-*                         # Temporary files (auto-cleaned)
 ```
 
-## 工作原理
+## How It Works
 
-1. 创建临时目录存储 Claude Code 配置和二进制文件
-2. 使用 bubblewrap 创建隔离的沙箱环境
-3. 挂载工作区为可读写，系统文件为只��
-4. 运行 Claude Code
-5. 退出时自动清理临时文件，可选保存会话历史
+1. Create temporary directory for Claude Code config and binary
+2. Use bubblewrap to create isolated sandbox environment
+3. Mount workspace as read/write, system files as read-only
+4. Run Claude Code
+5. Auto-cleanup temporary files on exit, optionally save session history
 
-## 故障排除
+## Troubleshooting
 
-### 找不到 uv/cargo 等工具
+### Cannot find uv/cargo/other tools
 
-确保工具安装在以下位置之一：
+Ensure tools are installed in one of these locations:
 - `~/.local/bin`
 - `~/.cargo/bin`
 - `/usr/bin`
 
-### API 认证失败
+### API authentication failed
 
-检查环境变量或 `~/.claude/settings.json` 中的配置：
+Check environment variables or `~/.claude/settings.json`:
 ```bash
 echo $ANTHROPIC_AUTH_TOKEN
 ```
 
-### 权限错误
+### Permission errors
 
-确保脚本有执行权限：
+Ensure the script has execute permission:
 ```bash
 chmod +x ~/.local/bin/claude-sandbox
 ```
 
-## 许可证
+## License
 
 MIT
 
-## 贡献
+## Contributing
 
-欢迎提交 Issue 和 Pull Request！
+Issues and Pull Requests are welcome!
