@@ -1,0 +1,16 @@
+# Claude CLI
+.claude/
+.claude.json
+
+# npm
+.npm/
+node_modules/
+
+# Cache
+.cache/
+
+# Local binaries
+.local/
+
+# Logs
+*.log

@@ -1,0 +1,101 @@
+#!/bin/bash
+# Claude Code Sandboxed Launcher
+set -e
+
+WORKSPACE="$PWD"
+CLAUDE_HOME="$HOME/.claude"
+
+# Parse options
+LOAD_SKILLS=0
+LOAD_PLUGINS=0
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --with-skills) LOAD_SKILLS=1; shift ;;
+    --with-plugins) LOAD_PLUGINS=1; shift ;;
+    --full) LOAD_SKILLS=1; LOAD_PLUGINS=1; shift ;;
+    *) break ;;
+  esac
+done
+
+# Check bubblewrap
+if ! command -v bwrap &>/dev/null; then
+  echo "Error: bubblewrap not found" >&2
+  exit 1
+fi
+
+# Find claude binary
+CLAUDE_BIN=$(command -v claude 2>/dev/null)
+if [[ -z "$CLAUDE_BIN" ]]; then
+  echo "Error: claude not found" >&2
+  exit 1
+fi
+CLAUDE_BIN=$(readlink -f "$CLAUDE_BIN")
+
+# Create temp directory for sandbox
+TEMP_DIR=$(mktemp -d)
+trap "rm -rf $TEMP_DIR" EXIT
+
+# Copy claude binary to temp
+mkdir -p "$TEMP_DIR/.local/bin"
+cp "$CLAUDE_BIN" "$TEMP_DIR/.local/bin/claude"
+chmod +x "$TEMP_DIR/.local/bin/claude"
+
+# Setup .claude config
+mkdir -p "$TEMP_DIR/.claude"
+
+[[ -f "$CLAUDE_HOME/.credentials.json" ]] && \
+  cp "$CLAUDE_HOME/.credentials.json" "$TEMP_DIR/.claude/"
+
+if [[ -f "$CLAUDE_HOME/settings.json" ]]; then
+  if command -v jq &>/dev/null; then
+    # Remove plugins config if not loading plugins
+    if [[ $LOAD_PLUGINS == 0 ]]; then
+      jq '. + {installMethod: "native"} | del(.plugins)' "$CLAUDE_HOME/settings.json" > "$TEMP_DIR/.claude/settings.json"
+    else
+      jq '. + {installMethod: "native"}' "$CLAUDE_HOME/settings.json" > "$TEMP_DIR/.claude/settings.json"
+    fi
+  else
+    cp "$CLAUDE_HOME/settings.json" "$TEMP_DIR/.claude/settings.json"
+  fi
+fi
+
+# Build mounts
+MOUNTS=(
+  --ro-bind /usr /usr
+  --ro-bind /etc /etc
+  --symlink /usr/lib /lib
+  --symlink /usr/lib64 /lib64
+  --symlink /usr/bin /bin
+  --dev-bind /dev /dev
+  --proc /proc
+  --tmpfs /tmp
+  --bind "$WORKSPACE" /workspace
+  --ro-bind "$TEMP_DIR/.local" /workspace/.local
+  --bind "$TEMP_DIR/.claude" /workspace/.claude
+)
+
+# Share network namespace for API access
+[[ -d /run/systemd/resolve ]] && \
+  MOUNTS+=(--ro-bind /run/systemd/resolve /run/systemd/resolve)
+
+# Optional mounts
+[[ $LOAD_SKILLS == 1 && -d "$CLAUDE_HOME/skills" ]] && \
+  MOUNTS+=(--ro-bind "$CLAUDE_HOME/skills" /workspace/.claude/skills)
+
+[[ $LOAD_PLUGINS == 1 && -d "$CLAUDE_HOME/plugins" ]] && \
+  MOUNTS+=(--ro-bind "$CLAUDE_HOME/plugins" /workspace/.claude/plugins)
+
+# Launch
+exec bwrap \
+  "${MOUNTS[@]}" \
+  --unshare-pid \
+  --unshare-ipc \
+  --unshare-uts \
+  --new-session \
+  --die-with-parent \
+  --chdir /workspace \
+  --setenv HOME /workspace \
+  --setenv PATH "/workspace/.local/bin:/usr/bin:/bin" \
+  --unsetenv CLAUDECODE \
+  /workspace/.local/bin/claude "$@"
