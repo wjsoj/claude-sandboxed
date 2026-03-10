@@ -54,22 +54,29 @@ After installation, use the `claude-sandbox` command directly.
 ### Basic Usage
 
 ```bash
-# Launch sandboxed Claude Code in current directory
+# Launch sandboxed Claude Code in current directory (minimal mode)
 claude-sandbox
 
 # Use with prompt
 claude-sandbox -p "Initialize a Python project"
 
+# Full mode with all plugins, skills, and MCP servers
+claude-sandbox --full
+
 # Save session history
 claude-sandbox --save -p "Create a React component"
+
+# Combine options
+claude-sandbox --full --save -p "Build a dashboard"
 ```
 
 ### Options
 
+- `--full` - Mount entire `~/.claude` directory for full experience (plugins, skills, MCP servers)
 - `--save` - Save session history to `.sandbox/output-timestamp.jsonl`
-- `--with-skills` - Load Claude Code skills
-- `--with-plugins` - Load Claude Code plugins
-- `--full` - Load both skills and plugins
+
+**Normal mode** (default): Minimal configuration with only API authentication
+**Full mode** (`--full`): Complete Claude Code experience with all features enabled
 
 ### API Configuration
 

@@ -7,16 +7,13 @@ CLAUDE_HOME="$HOME/.claude"
 SANDBOX_DIR="$WORKSPACE/.sandbox"
 
 # Parse options
-LOAD_SKILLS=0
-LOAD_PLUGINS=0
+FULL_MODE=0
 SAVE_SESSION=0
 CLAUDE_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --with-skills) LOAD_SKILLS=1; shift ;;
-    --with-plugins) LOAD_PLUGINS=1; shift ;;
-    --full) LOAD_SKILLS=1; LOAD_PLUGINS=1; shift ;;
+    --full) FULL_MODE=1; shift ;;
     --save) SAVE_SESSION=1; shift ;;
     *) CLAUDE_ARGS+=("$1"); shift ;;
   esac
@@ -48,7 +45,7 @@ cleanup() {
     TIMESTAMP=$(date +%Y%m%d-%H%M%S)
     OUTPUT_FILE="$SANDBOX_DIR/output-$TIMESTAMP.jsonl"
 
-    # Find the most recent session file in the temp .claude/projects directory
+    # Find the most recent session file
     LATEST_SESSION=$(find "$TEMP_DIR/.claude/projects" -name "*.jsonl" -type f 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
 
     if [[ -n "$LATEST_SESSION" && -f "$LATEST_SESSION" ]]; then
@@ -65,7 +62,7 @@ cleanup() {
   # Clean up any directories created in workspace by Claude Code
   rm -rf "$WORKSPACE/.claude" "$WORKSPACE/.local" "$WORKSPACE/.npm" "$WORKSPACE/.claude.json" 2>/dev/null
 
-  # Clean up old temp directories in .sandbox (keep only output-*.jsonl files)
+  # Clean up old temp directories in .sandbox
   if [[ -d "$SANDBOX_DIR" ]]; then
     find "$SANDBOX_DIR" -mindepth 1 -maxdepth 1 -type d -name "temp-*" -exec rm -rf {} + 2>/dev/null
   fi
@@ -76,16 +73,11 @@ mkdir -p "$TEMP_DIR/.local/bin"
 cp "$CLAUDE_BIN" "$TEMP_DIR/.local/bin/claude"
 chmod +x "$TEMP_DIR/.local/bin/claude"
 
-# Create isolated .claude directory with minimal config
-mkdir -p "$TEMP_DIR/.claude"
-
 # Extract API config from environment variables or settings.json
 BASE_URL="${ANTHROPIC_BASE_URL:-}"
 AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-}"
 
-# If not in environment, try to read from settings.json using grep/sed
 if [[ -z "$BASE_URL" || -z "$AUTH_TOKEN" ]] && [[ -f "$CLAUDE_HOME/settings.json" ]]; then
-  # Extract values using grep and sed (no jq required)
   if [[ -z "$BASE_URL" ]]; then
     BASE_URL=$(grep -o '"ANTHROPIC_BASE_URL"[[:space:]]*:[[:space:]]*"[^"]*"' "$CLAUDE_HOME/settings.json" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/')
   fi
@@ -94,14 +86,37 @@ if [[ -z "$BASE_URL" || -z "$AUTH_TOKEN" ]] && [[ -f "$CLAUDE_HOME/settings.json
   fi
 fi
 
-# Validate that credentials are available
+# Validate credentials
 if [[ -z "$AUTH_TOKEN" ]]; then
   echo "Error: ANTHROPIC_AUTH_TOKEN not found in environment or settings.json" >&2
   exit 1
 fi
 
-# Create minimal settings.json with only env config
-cat > "$TEMP_DIR/.claude/settings.json" <<EOF
+# Setup .claude directory based on mode
+mkdir -p "$TEMP_DIR/.claude"
+
+if [[ $FULL_MODE == 1 ]]; then
+  # Full mode: copy entire .claude directory for consistent experience
+  if [[ -d "$CLAUDE_HOME" ]]; then
+    cp -r "$CLAUDE_HOME"/* "$TEMP_DIR/.claude/" 2>/dev/null || true
+
+    # Fix absolute paths in plugin JSON files
+    if [[ -f "$TEMP_DIR/.claude/plugins/installed_plugins.json" ]]; then
+      sed -i "s|$CLAUDE_HOME|/home/sandbox/.claude|g" "$TEMP_DIR/.claude/plugins/installed_plugins.json"
+    fi
+
+    if [[ -f "$TEMP_DIR/.claude/plugins/known_marketplaces.json" ]]; then
+      sed -i "s|$CLAUDE_HOME|/home/sandbox/.claude|g" "$TEMP_DIR/.claude/plugins/known_marketplaces.json"
+    fi
+  fi
+
+  # Copy .claude.json if it exists
+  if [[ -f "$HOME/.claude.json" ]]; then
+    cp "$HOME/.claude.json" "$TEMP_DIR/.claude.json"
+  fi
+else
+  # Normal mode: minimal settings.json with only auth config
+  cat > "$TEMP_DIR/.claude/settings.json" <<EOF
 {
   "env": {
     "ANTHROPIC_BASE_URL": "$BASE_URL",
@@ -109,6 +124,7 @@ cat > "$TEMP_DIR/.claude/settings.json" <<EOF
   }
 }
 EOF
+fi
 
 # Build mounts
 MOUNTS=(
@@ -137,12 +153,9 @@ MOUNTS=(
 [[ -d /run/systemd/resolve ]] && \
   MOUNTS+=(--ro-bind /run/systemd/resolve /run/systemd/resolve)
 
-# Optional mounts
-[[ $LOAD_SKILLS == 1 && -d "$CLAUDE_HOME/skills" ]] && \
-  MOUNTS+=(--ro-bind "$CLAUDE_HOME/skills" /home/sandbox/.claude/skills)
-
-[[ $LOAD_PLUGINS == 1 && -d "$CLAUDE_HOME/plugins" ]] && \
-  MOUNTS+=(--ro-bind "$CLAUDE_HOME/plugins" /home/sandbox/.claude/plugins)
+# Mount .claude.json if it exists (for full mode)
+[[ -f "$TEMP_DIR/.claude.json" ]] && \
+  MOUNTS+=(--bind "$TEMP_DIR/.claude.json" /home/sandbox/.claude.json)
 
 # Launch
 bwrap \
