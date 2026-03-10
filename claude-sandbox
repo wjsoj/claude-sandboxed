@@ -83,11 +83,14 @@ mkdir -p "$TEMP_DIR/.claude"
 BASE_URL="${ANTHROPIC_BASE_URL:-}"
 AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-}"
 
-# If not in environment, try to read from settings.json
+# If not in environment, try to read from settings.json using grep/sed
 if [[ -z "$BASE_URL" || -z "$AUTH_TOKEN" ]] && [[ -f "$CLAUDE_HOME/settings.json" ]]; then
-  if command -v jq &>/dev/null; then
-    [[ -z "$BASE_URL" ]] && BASE_URL=$(jq -r '.env.ANTHROPIC_BASE_URL // empty' "$CLAUDE_HOME/settings.json")
-    [[ -z "$AUTH_TOKEN" ]] && AUTH_TOKEN=$(jq -r '.env.ANTHROPIC_AUTH_TOKEN // empty' "$CLAUDE_HOME/settings.json")
+  # Extract values using grep and sed (no jq required)
+  if [[ -z "$BASE_URL" ]]; then
+    BASE_URL=$(grep -o '"ANTHROPIC_BASE_URL"[[:space:]]*:[[:space:]]*"[^"]*"' "$CLAUDE_HOME/settings.json" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/')
+  fi
+  if [[ -z "$AUTH_TOKEN" ]]; then
+    AUTH_TOKEN=$(grep -o '"ANTHROPIC_AUTH_TOKEN"[[:space:]]*:[[:space:]]*"[^"]*"' "$CLAUDE_HOME/settings.json" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/')
   fi
 fi
 
@@ -98,19 +101,7 @@ if [[ -z "$AUTH_TOKEN" ]]; then
 fi
 
 # Create minimal settings.json with only env config
-if command -v jq &>/dev/null; then
-  jq -n \
-    --arg base_url "$BASE_URL" \
-    --arg token "$AUTH_TOKEN" \
-    '{
-      env: {
-        ANTHROPIC_BASE_URL: $base_url,
-        ANTHROPIC_AUTH_TOKEN: $token
-      }
-    }' > "$TEMP_DIR/.claude/settings.json"
-else
-  # Fallback if jq is not available
-  cat > "$TEMP_DIR/.claude/settings.json" <<EOF
+cat > "$TEMP_DIR/.claude/settings.json" <<EOF
 {
   "env": {
     "ANTHROPIC_BASE_URL": "$BASE_URL",
@@ -118,7 +109,6 @@ else
   }
 }
 EOF
-fi
 
 # Build mounts
 MOUNTS=(

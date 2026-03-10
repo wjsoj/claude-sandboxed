@@ -15,23 +15,22 @@ Run Claude Code in a sandboxed environment using bubblewrap. Protects system fil
 
 - `bubblewrap` - Sandbox runtime
 - `claude` - Claude Code CLI
-- `jq` - JSON processor (optional, for config parsing)
 
 ### Install Dependencies
 
 **Arch Linux:**
 ```bash
-sudo pacman -S bubblewrap jq
+sudo pacman -S bubblewrap
 ```
 
 **Ubuntu/Debian:**
 ```bash
-sudo apt install bubblewrap jq
+sudo apt install bubblewrap
 ```
 
 **Fedora:**
 ```bash
-sudo dnf install bubblewrap jq
+sudo dnf install bubblewrap
 ```
 
 ## Quick Install
