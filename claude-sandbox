@@ -294,6 +294,11 @@ cleanup() {
   fi
   [[ -n "$BRIDGE_PID" ]] && kill "$BRIDGE_PID" 2>/dev/null || true
   rm -rf "$TEMP_DIR"
+  # In profile mode, wipe the workspace dir so each session starts clean.
+  # In ephemeral mode the "workspace" is the user's $PWD — never touch it.
+  if [[ -n "$PROFILE_DIR" && -d "$PROFILE_DIR/workspace" ]]; then
+    find "$PROFILE_DIR/workspace" -mindepth 1 -delete 2>/dev/null || true
+  fi
   rm -rf "$WORKSPACE/.claude" "$WORKSPACE/.local" "$WORKSPACE/.npm" "$WORKSPACE/.claude.json" 2>/dev/null || true
   find "$SANDBOX_DIR" -mindepth 1 -maxdepth 1 -type d -name "temp-*" -exec rm -rf {} + 2>/dev/null || true
 }
@@ -415,141 +420,141 @@ fi
 if [[ $BURN == 1 ]]; then
   read -r -d '' BURN_PROMPT <<'PROMPT' || true
 /ralph-loop:ralph-loop
-# 多智能体并行作战指令
+ultrathink
 
-你是这个项目的**总指挥**，必须**最大化并行度**来加速产出。每一轮工作都遵循以下铁律：
+# 多智能体并行作战指令（极限 token 消耗模式）
 
-1. **每次必须在同一条消息里同时发起至少 5 个 Agent 子任务**（使用 Agent 工具，subagent_type 用 general-purpose 即可）。5 个是下限，目标是**单条消息里塞满并行 tool_use**。
-2. 不允许串行调用 Agent：禁止"先派一个、等它回来、再派下一个"。永远是"一口气派 N 个，等全部回来，再一口气派下一批 N 个"。
-3. 每个子任务的 prompt 都要写得**自给自足**（子 agent 看不到主线对话），明确告知它要写哪几个文件、文件路径、每个文件的具体内容要求和最低行数。
-4. 子任务回来后，你**不要回顾性总结**它们写了什么，直接基于它们的进度规划下一批 8+ 个子任务派发。
-5. 任何时候 PROGRESS.md 写完前都不允许停下休息或问用户问题。
-6. **token 经济**：子 agent 之间的工作要尽量正交（不同模块/不同 crate/不同文档），减少冲突重写。但完全允许"两个子 agent 写同一类型不同模块的代码"这种并行。
+你是 **DistribuOS** 平台的总架构师 + 总指挥。**所有思考都必须 ultrathink（最大 thinking budget），不要省力。** 每一轮都遵循以下铁律：
 
-# 工程任务：从零实现 SandboxDB
+## A. 规划阶段（仅在没有 PLAN.md 时执行一次）
 
-我现在要你从零开始设计并**完整实现**一个名为 **SandboxDB** 的分布式键值数据库。所有产出物以源文件形式落到当前 workspace 目录里，不要把代码贴在对话里。整个工程不要求能编译运行（你也不需要执行任何构建命令），但要做到「另一个高级工程师拿到这堆文件就能照着继续推进」的工业级完整度。
+第一步：检查 `sandboxdb/PLAN.md` 是否存在。**如果不存在**，立刻使用 Agent 工具派出一个 **subagent_type=Plan** 的规划子 agent，让它产出一份 PLAN.md。
 
-# 硬性约束
-- 实现语言：**Rust**（纯 Rust，不依赖 cargo/rustc 是否可用，你只写 .rs 文件）。允许在 Cargo.toml 中声明依赖，但不要尝试 `cargo build`。
-- 文件粒度：**至少 60 个源文件**，分布在合理的模块/crate 树下。任何单文件超过 600 行都要按职责拆分。
-- 代码体量：**总 Rust 代码行数不少于 8000 行**（不含空行和单行注释），且每个文件都要有充分实现，**严禁出现 `todo!()`、`unimplemented!()`、`// TODO`、空函数体、占位 stub**。如果某个细节确实复杂到难以一次写完，那就退一步给出一个朴素但能跑通逻辑的实现。
-- 文档：另外至少 15 个 Markdown 文档（架构、模块设计、协议规范、运维手册、故障演练、性能模型、安全模型、迁移指南、API 参考……）。
-- 测试：**每个模块都要有单元测试文件**（`#[cfg(test)] mod tests`），另外单独一个 `tests/` 目录放至少 10 个集成测试用例，模拟节点故障、网络分区、并发冲突等场景。
-- 不要询问我任何确认，**直接开干**，每完成一个里程碑就用一条简短输出汇报进度然后继续下一项。
+派给 Plan agent 的 prompt 必须以 `ultrathink` 开头，并明确：
+- 任务：为下面 "DistribuOS 平台范围" 定义的整个工程产出一份**极尽详细**的实现规划
+- 输出：单一文件 `sandboxdb/PLAN.md`，**至少 12000 字**
+- 内容要求：每个子系统列出至少 20 个里程碑、每个里程碑配 ≥5 个具体可执行子任务、每个子任务列出输出文件清单与最低行数门槛、任务依赖图（用 ASCII 画出来）、并行度建议
+- 同时输出 `sandboxdb/WAVES.md`：把所有任务排成 ≥40 个并行波次，每波列出 5-12 个独立子任务（具体到 prompt 草稿）
 
-# 工程蓝图
-建议（但不限于）的目录结构：
+PLAN.md 落盘后，进入下面的执行阶段。
+
+## B. 执行阶段（每次主线响应必须做的事）
+
+1. **每次必须在同一条消息里同时发起至少 5 个 Agent 子任务**。每个子任务的 prompt 都必须：
+   - **以 `ultrathink` 开头**（强制最大 thinking budget）
+   - 自给自足（子 agent 看不到主线对话）
+   - 明确文件路径、最低行数门槛、内容章节大纲
+2. 不允许串行调用 Agent。永远是"一口气派 N 个，等全部回来，再一口气派下一批 N 个"。
+3. 子任务回来后**不要回顾性总结**，直接基于 WAVES.md 派下一波。
+4. 任何时候 `PROGRESS.md` 写完前都不允许停下、不许问问题。
+5. 每跑完 5 波就追加一次 PLAN.md（让 Plan agent 重新评审进度，补 ≥3000 字的"中期复盘 + 剩余里程碑修订"）。
+
+# DistribuOS 平台范围（极大规模工程）
+
+DistribuOS 是一套虚构的云原生分布式平台，包含**至少 10 个独立子系统**，每个子系统都是一个完整工程：
+
+| # | 子系统 | 角色 |
+|---|---|---|
+| 1 | **SandboxDB** | 分布式 KV 存储（Raft + LSM-tree + MVCC） |
+| 2 | **SandboxQ** | 分布式消息队列（类 Kafka，含 broker / 副本 / 消费组 / 事务消息） |
+| 3 | **SandboxMesh** | 服务网格（控制面 + 数据面 + xDS + mTLS + 流量治理） |
+| 4 | **SandboxObj** | 对象存储（类 S3，含 erasure coding / 桶生命周期 / 签名 URL） |
+| 5 | **SandboxStream** | 流处理引擎（DAG 调度、状态后端、exactly-once） |
+| 6 | **SandboxFlow** | 工作流编排（DSL + 调度器 + 持久状态机） |
+| 7 | **SandboxAuth** | 身份与权限（OIDC + RBAC + ABAC + 审计日志） |
+| 8 | **SandboxObs** | 可观测性栈（metrics + logs + traces + 告警引擎） |
+| 9 | **SandboxCtl** | 跨子系统的统一 CLI + Admin API |
+| 10 | **SandboxSDK** | 官方 SDK，**Rust / Go / Python / TypeScript / Java 五种语言并行实现** |
+
+# 硬性规模指标
+
+- **源代码文件总数 ≥ 250**（跨 60+ 个 crate / 包 / 模块）
+- **总源代码行数 ≥ 35000**
+- **Markdown 文档 ≥ 50 份**（每份 ≥ 2500 字）
+- **集成测试 ≥ 40 个**
+- **每个子系统至少 4 个核心模块**，每个模块包含主实现、单测、bench、错误码定义
+- **SandboxSDK 必须五种语言各自完整**（不是只写 Rust，其他四种粘贴 stub）
+
+# 三轮重写制度（**强制**，禁止跳过，禁止合并）
+
+每一个源代码文件和文档都必须经历**三轮独立重写**，且三轮都必须真实落盘（v2、v3 直接覆盖同名文件，旧版备份到 `archive/`）：
+
+- **V1（初版）**: 朴素直接的实现，体现完整逻辑即可。
+- **V2（review-and-rewrite）**: 派 reviewer 子 agent（ultrathink）读 V1，写一份 ≥1500 字的内部 review 报告到 `reviews/<相对路径>.v1.md`，列出 ≥15 条改进点；然后由另一个 implementer 子 agent（ultrathink）读该 review，**整文件重写**，加注释、加错误处理、加边界条件、加性能优化点说明。
+- **V3（production hardening）**: 再派 hardener 子 agent（ultrathink）针对 V2 做安全审计、并发审计、API 完备性审计，输出 `reviews/<相对路径>.v2.md`（≥2000 字），然后**再重写一次**形成 V3。
+
+实际产出 ≈ 250 × 3 源文件 + 250 × 2 review 报告 + 50 × 3 文档版本 = **约 1400 次 Write 调用**。
+
+# 工程结构总要求
+
+所有产出物落到 workspace 下 `sandboxdb/`（出于历史原因目录名保持不变）。每个子系统是独立子目录：
 
 ```
 sandboxdb/
-├── Cargo.toml                  # workspace 根，列出所有成员 crate
+├── PLAN.md                  ← 由 Plan agent 产出（≥12000 字）
+├── WAVES.md                 ← 波次调度表（≥40 波）
+├── PROGRESS.md              ← 收尾时生成
 ├── README.md
-├── ARCHITECTURE.md
-├── docs/
-│   ├── design/
-│   │   ├── 00-overview.md
-│   │   ├── 01-storage-engine.md
-│   │   ├── 02-replication-raft.md
-│   │   ├── 03-sharding.md
-│   │   ├── 04-network-protocol.md
-│   │   ├── 05-transaction-model.md
-│   │   ├── 06-mvcc.md
-│   │   ├── 07-membership.md
-│   │   ├── 08-observability.md
-│   │   ├── 09-backup-restore.md
-│   │   └── 10-security.md
-│   ├── ops/
-│   │   ├── runbook.md
-│   │   ├── failure-drills.md
-│   │   └── capacity-planning.md
-│   └── api/
-│       ├── client-sdk.md
-│       └── admin-cli.md
-├── crates/
-│   ├── sandbox-core/           # 核心类型、错误、配置
-│   ├── sandbox-storage/        # LSM-tree 存储引擎（memtable / sstable / compaction / wal / bloom filter）
-│   ├── sandbox-replication/    # Raft 实现（leader election / log replication / snapshot / membership change）
-│   ├── sandbox-network/        # 自定义 TCP 协议帧、连接池、背压
-│   ├── sandbox-shard/          # 一致性哈希环、range-based sharding、rebalance
-│   ├── sandbox-txn/            # MVCC、两阶段提交、冲突检测
-│   ├── sandbox-server/         # 节点主程序（main.rs 加各种 service）
-│   ├── sandbox-client/         # 客户端 SDK（异步、连接管理、重试、熔断）
-│   ├── sandbox-cli/            # 管理命令行（节点加入退出、备份、查询拓扑）
-│   ├── sandbox-bench/          # 压测工具
-│   └── sandbox-test-utils/     # 测试用 mock 节点、故障注入框架
-└── tests/                      # 工程级集成测试
-    ├── crash_recovery.rs
-    ├── partition_tolerance.rs
-    ├── concurrent_writes.rs
-    ├── rebalance_under_load.rs
-    ├── snapshot_install.rs
-    ├── membership_change.rs
-    ├── compaction_correctness.rs
-    ├── txn_isolation.rs
-    ├── client_retry.rs
-    └── slow_disk.rs
+├── ARCHITECTURE.md          ← 平台总览 ≥8000 字
+├── archive/                 ← V1/V2 旧版备份
+├── reviews/                 ← review 报告
+├── sandboxdb/               ← KV 存储
+├── sandboxq/                ← 消息队列
+├── sandboxmesh/             ← 服务网格
+├── sandboxobj/              ← 对象存储
+├── sandboxstream/           ← 流处理
+├── sandboxflow/             ← 工作流
+├── sandboxauth/             ← 身份权限
+├── sandboxobs/              ← 观测栈
+├── sandboxctl/              ← CLI
+└── sandboxsdk/
+    ├── rust/
+    ├── go/
+    ├── python/
+    ├── typescript/
+    └── java/
 ```
 
-# 实现要求细则
-1. **存储引擎**：写一个 LSM-tree，至少包含 SkipList memtable、WAL（带 checksum）、SSTable 编码（含 block index、bloom filter）、leveled compaction、读路径合并、墓碑回收。
-2. **复制**：手写 Raft（不要 `use raft`），核心算法严格按论文实现：term/voteFor/log entries、AppendEntries、RequestVote、commitIndex、安全性约束、log compaction 通过 InstallSnapshot。
-3. **网络**：自定义二进制帧（4 字节 magic + 4 字节 length + 1 字节 type + payload + 4 字节 crc32），完整的编解码器、连接管理、心跳、背压。
-4. **事务**：MVCC 时间戳由全局递增器分配（伪实现亦可），两阶段提交协调器，悲观与乐观两种锁路径都要写。
-5. **客户端**：异步 API（tokio 风格也行，不必真的 `tokio = ...`），失败重试、抖动退避、节点拓扑缓存与失效。
-6. **可观测**：每个 crate 都给出基于 trait 的 metrics hook、结构化日志事件枚举、tracing span 命名规范。
+每个子系统目录内部至少：`Cargo.toml`（或对应语言的项目文件）、`docs/`（design + ops + api）、`crates/` 或 `pkg/`（多个核心模块）、`tests/`（≥4 集成测试）。
 
-# 文档要求
-- `ARCHITECTURE.md`：不少于 6000 字的工程总览，含 ASCII 系统图（多张），数据流走读，关键不变量列表。
-- 每个 `docs/design/0X-*.md`：单文不少于 2000 字，含至少 3 张 ASCII 图、5 段伪代码、10 条设计决策的权衡矩阵。
-- `docs/ops/runbook.md`：覆盖 20+ 个常见运维场景，每个都有命令示例和决策流程。
-- `docs/ops/failure-drills.md`：12 个完整故障演练剧本（触发条件、检测信号、自动降级、人工介入、恢复流程、复盘清单）。
-- `docs/api/client-sdk.md` 与 `docs/api/admin-cli.md`：完整接口签名、参数表、错误码、示例代码块。
+不要尝试 build。**禁止 `todo!()` / `unimplemented!()` / `// TODO` / `这里省略` / 空函数体**。
 
-# 工作节奏（**全程多智能体并行**）
+# 工作节奏
 
-按"波次"推进。每一波在同一条消息里并发派发 8-12 个 Agent 子任务，等全部回来后立刻发下一波。**禁止退化为串行调度**。
+**Wave 0（规划，仅当 PLAN.md / WAVES.md 不存在时执行一次）**: 派 Plan agent 产出 PLAN.md + WAVES.md。
 
-**第 1 波**（架构/总览，并发 5）：每个子 agent 写一个文件
-- 子 agent A: 写 `sandboxdb/README.md`（≥3000 字）+ `Cargo.toml`（workspace 根）
-- 子 agent B: 写 `sandboxdb/ARCHITECTURE.md`（≥6000 字）
-- 子 agent C-E: 各负责若干份 `docs/design/0X-*.md`（每份 ≥2000 字）
+**Wave 1+ （执行）**: 严格按 WAVES.md 派发子任务。每波 ≥5 个并行 Agent 子任务，每个子任务 prompt 以 `ultrathink` 开头并自给自足。
 
-**第 2 波**（剩余设计文档 + 运维文档，并发 ≥10）：
-- 剩余 `docs/design/*.md`
-- 所有 `docs/ops/*.md`
-- 所有 `docs/api/*.md`
-每个文档独立一个子 agent。
+**每跑完 5 个 Wave**：派一个 Plan agent 重读 WAVES.md 和 workspace 现状，追加 ≥3000 字的"中期复盘 + 剩余里程碑修订"到 PLAN.md，并更新 WAVES.md。
 
-**第 3 波到第 5 波**（11 个 crate 实现，每波处理 4-5 个 crate，**每个 crate 内部再拆给 1-2 个子 agent**）：
-- 同一个 crate 可以拆成"主实现"和"单测"两个子任务并行
-- 不同 crate 之间永远并行，不允许"先做 storage 再做 network"
-
-**第 6 波**（集成测试 + bench，并发 ≥10）：每个测试文件一个子 agent。
-
-**第 7 波**（收尾）：单独一个子 agent 扫一遍 workspace 文件树，生成 `PROGRESS.md`（含每个文件的行数统计、按 crate 分组的目录树、未达标项的清单）。
-
-**关键约束**：每一波结束后，主线只做"派下一波"的简短规划（≤50 token 输出），绝不复述子 agent 的产出。所有内容必须落在文件里，主线对话只是调度记录。
-
-# 强约束（再次强调）
-- 任何「占位代码」「TODO」「unimplemented」「这里省略具体实现」都视为失败。如果某段实在写不下，**朴素实现 + 详细注释解释如何替换为更优版本** 总是比留空白强。
-- 不要问我「要不要继续」「是否需要展开」，**全程一次性输出，直到 PROGRESS.md 写完**。
-- 不要把所有内容贴回对话框，**只用 Write 工具落盘**，对话里只发简短进度汇报。
+**主线说话原则**：每波结束主线只输出 ≤50 token 的调度记录（"派 Wave X 完成，发 Wave X+1"），**禁止复述子 agent 的产出**。
 
 # 完成信号
-只有当所有以下条件都满足时，才在回复末尾输出**字面字符串** `<promise>SANDBOXDB COMPLETE</promise>`：
+只有当**全部**以下条件都满足时，才在回复末尾输出**字面字符串** `<promise>SANDBOXDB COMPLETE</promise>`：
+- `sandboxdb/PLAN.md` 存在且 ≥12000 字
+- `sandboxdb/WAVES.md` 存在且列出 ≥40 个 wave
 - `sandboxdb/PROGRESS.md` 存在
-- `PROGRESS.md` 列出 ≥60 个 Rust 源文件、≥15 个 Markdown 文档、≥10 个集成测试文件
-- 没有任何文件包含 `todo!()` / `unimplemented!()` / `// TODO` / `这里省略`
+- `PROGRESS.md` 列出 ≥250 个源文件、≥50 个 Markdown 文档、≥40 个集成测试
+- **每个文件都已完成 V1、V2、V3 三轮重写**，archive/ 里有 V1、V2 备份
+- `reviews/` 目录至少 500 份 review 报告
+- 10 个子系统每个都有独立目录且文件齐全
+- SandboxSDK 五种语言（rust/go/python/typescript/java）目录都有完整实现
+- 没有任何文件包含 `todo!()` / `unimplemented!()` / `// TODO` / `这里省略` / 空函数体
 
-任何一条不满足都**不要**输出 promise 标签——继续迭代。Ralph loop 会自动喂回 prompt 让你看着已有进度继续干。
+任何一条不满足都**绝对不要**输出 promise 标签——继续迭代。Ralph loop 会自动喂回 prompt 让你看着已有进度接着干。哪怕你觉得"差不多了"也不要偷停。Ralph 每次喂回这段 prompt 都意味着上一轮没完成，请直接基于现有文件继续推进**下一个 Wave**。
 
-现在开始。第一步：写 README.md 和 Cargo.toml 与 ARCHITECTURE.md。
+# 现在立刻开始
 
---max-iterations 20 --completion-promise "SANDBOXDB COMPLETE"
+第一步：检查 `sandboxdb/PLAN.md` 是否存在。
+- **不存在** → 立即使用 Agent 工具，`subagent_type=Plan`，按上面的 A 节要求派一个 Plan agent 产出 PLAN.md + WAVES.md。
+- **已存在** → 读取 WAVES.md 找到第一个尚未完成的 Wave，立即在同一条消息内**并行派发**该 Wave 的所有子任务（每个 prompt 以 `ultrathink` 开头）。
+
+绝对不要先汇报"我打算这么干"——直接发工具调用。
+
+--max-iterations 80 --completion-promise "SANDBOXDB COMPLETE"
 PROMPT
   CLAUDE_ARGS+=("$BURN_PROMPT")
-  info "${C_YELLOW}🔥 burn mode${C_RESET} — multi-agent parallel SandboxDB build, ralph-loop x20"
+  info "${C_YELLOW}🔥 burn mode${C_RESET} — Plan-driven multi-agent DistribuOS build, ralph-loop x80"
 fi
 
 # ── Launch ──────────────────────────────────────────────────────────────────
