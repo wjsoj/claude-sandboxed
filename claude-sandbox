@@ -2,121 +2,344 @@
 # Claude Code Sandboxed Launcher
 set -e
 
-WORKSPACE="$PWD"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+CLAUDE_SANDBOX_HOME="${CLAUDE_SANDBOX_HOME:-$SCRIPT_DIR}"
 CLAUDE_HOME="$HOME/.claude"
-SANDBOX_DIR="$WORKSPACE/.sandbox"
+SANDBOX_DIR="$CLAUDE_SANDBOX_HOME/.sandbox"
+PROFILES_ROOT="$CLAUDE_SANDBOX_HOME/profiles"
+# WORKSPACE is set later: profiles get their own ./workspace; ephemeral uses $PWD
+WORKSPACE=""
 
-# Parse options
+# ── ANSI helpers ────────────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+  C_RESET=$'\033[0m'; C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'
+  C_CYAN=$'\033[36m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_RED=$'\033[31m'
+else
+  C_RESET=; C_DIM=; C_BOLD=; C_CYAN=; C_GREEN=; C_YELLOW=; C_RED=
+fi
+die()  { echo "${C_RED}error:${C_RESET} $*" >&2; exit 1; }
+info() { echo "${C_DIM}·${C_RESET} $*"; }
+
+usage() {
+  cat <<EOF
+${C_BOLD}claude-sandbox${C_RESET} — sandboxed Claude Code launcher
+
+${C_BOLD}Usage${C_RESET}
+  claude-sandbox                       launch interactive menu
+  claude-sandbox <profile>             use/create persistent profile
+  claude-sandbox <profile> --full      bootstrap new profile from ~/.claude
+  claude-sandbox <profile> --burn      auto-run a heavy text task on start
+  claude-sandbox --no-menu             one-shot ephemeral sandbox
+  claude-sandbox ls                    list profiles
+  claude-sandbox rm <profile>          delete a profile
+  claude-sandbox proxy <profile>           show profile's proxy
+  claude-sandbox proxy <profile> <url>     set socks5 proxy
+  claude-sandbox proxy <profile> --unset   clear proxy
+  claude-sandbox help
+
+Pass args to claude after \`--\`, e.g.:
+  claude-sandbox work -- -p "hello"
+EOF
+}
+
+list_profiles() {
+  [[ -d "$PROFILES_ROOT" ]] || return 0
+  find "$PROFILES_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort
+}
+
+proxy_of() {
+  local p="$PROFILES_ROOT/$1/proxy.conf"
+  if [[ -s "$p" ]]; then head -1 "$p" | tr -d '[:space:]'; fi
+  return 0
+}
+
+set_proxy() {
+  local name="$1" url="$2"
+  [[ -d "$PROFILES_ROOT/$name" ]] || die "profile not found: $name"
+  if [[ -z "$url" || "$url" == --unset ]]; then
+    rm -f "$PROFILES_ROOT/$name/proxy.conf"
+    echo "${C_GREEN}✓${C_RESET} cleared proxy for ${C_BOLD}$name${C_RESET}"
+  else
+    [[ "$url" =~ ^socks5h?:// ]] || die "URL must start with socks5:// or socks5h://"
+    echo "$url" > "$PROFILES_ROOT/$name/proxy.conf"
+    echo "${C_GREEN}✓${C_RESET} proxy for ${C_BOLD}$name${C_RESET} → $url"
+  fi
+}
+
+pick_profile() {
+  local prompt="${1:-pick number}"
+  local -a items=(); local i=0
+  echo "" >/dev/tty
+  while IFS= read -r name; do
+    [[ -z "$name" ]] && continue
+    i=$((i+1)); items+=("$name")
+    local px; px=$(proxy_of "$name")
+    if [[ -n "$px" ]]; then
+      printf "  ${C_GREEN}%2d${C_RESET}) %-20s ${C_DIM}%s${C_RESET}\n" "$i" "$name" "$px" >/dev/tty
+    else
+      printf "  ${C_GREEN}%2d${C_RESET}) %s\n" "$i" "$name" >/dev/tty
+    fi
+  done < <(list_profiles)
+  if [[ $i -eq 0 ]]; then
+    echo "  ${C_DIM}(no profiles yet)${C_RESET}" >/dev/tty
+    return 1
+  fi
+  echo "" >/dev/tty
+  local n
+  read -rp "  $prompt (empty = cancel): " n </dev/tty
+  [[ -z "$n" || ! "$n" =~ ^[0-9]+$ ]] && return 1
+  local sel="${items[$((n-1))]:-}"
+  [[ -z "$sel" ]] && return 1
+  printf '%s\n' "$sel"
+}
+
+find_free_port() {
+  local p
+  for p in $(seq 18080 18180); do
+    if ! timeout 0.2 bash -c "</dev/tcp/127.0.0.1/$p" 2>/dev/null; then
+      echo "$p"; return 0
+    fi
+  done
+  return 1
+}
+
+# ── Interactive menu ────────────────────────────────────────────────────────
+menu() {
+  while true; do
+    clear
+    cat <<EOF
+${C_CYAN}╭──────────────────────────────────────────╮${C_RESET}
+${C_CYAN}│${C_RESET}  ${C_BOLD}Claude Sandbox${C_RESET}                          ${C_CYAN}│${C_RESET}
+${C_CYAN}│${C_RESET}  ${C_DIM}sandboxed Claude Code w/ profiles${C_RESET}       ${C_CYAN}│${C_RESET}
+${C_CYAN}╰──────────────────────────────────────────╯${C_RESET}
+
+${C_BOLD}Profiles${C_RESET}
+EOF
+    local -a items=(); local i=0
+    while IFS= read -r name; do
+      [[ -z "$name" ]] && continue
+      i=$((i+1)); items+=("$name")
+      local px; px=$(proxy_of "$name")
+      if [[ -n "$px" ]]; then
+        printf "  ${C_GREEN}%2d${C_RESET}) %-20s ${C_DIM}proxy:${C_RESET} %s\n" "$i" "$name" "$px"
+      else
+        printf "  ${C_GREEN}%2d${C_RESET}) %-20s ${C_DIM}(no proxy)${C_RESET}\n" "$i" "$name"
+      fi
+    done < <(list_profiles)
+    [[ $i -eq 0 ]] && echo "  ${C_DIM}(no profiles yet — press ${C_RESET}${C_BOLD}n${C_RESET}${C_DIM} to create one)${C_RESET}"
+
+    cat <<EOF
+
+${C_BOLD}Actions${C_RESET}
+  ${C_YELLOW}n${C_RESET}) new profile           ${C_YELLOW}d${C_RESET}) delete profile
+  ${C_YELLOW}p${C_RESET}) set proxy             ${C_YELLOW}e${C_RESET}) ephemeral (no profile)
+  ${C_YELLOW}q${C_RESET}) quit
+
+EOF
+    read -rp "  ${C_BOLD}> ${C_RESET}" choice
+    case "$choice" in
+      ''|q|Q) exit 0 ;;
+      e|E) exec "$0" --no-menu ;;
+      n|N)
+        read -rp "  name: " name
+        [[ -z "$name" ]] && continue
+        if [[ -d "$PROFILES_ROOT/$name" ]]; then
+          echo "  ${C_RED}profile already exists${C_RESET}"
+          read -rp "  ${C_DIM}press enter…${C_RESET}" _; continue
+        fi
+        read -rp "  bootstrap from ~/.claude? [y/N] " yn
+        read -rp "  socks5 proxy URL (empty = none): " proxy
+        mkdir -p "$PROFILES_ROOT/$name/.claude"
+        if [[ -n "$proxy" ]]; then
+          if [[ "$proxy" =~ ^socks5h?:// ]]; then
+            echo "$proxy" > "$PROFILES_ROOT/$name/proxy.conf"
+            echo "  ${C_GREEN}✓${C_RESET} proxy set"
+          else
+            echo "  ${C_YELLOW}!${C_RESET} URL must start with socks5:// — skipped"
+          fi
+        fi
+        read -rp "  ${C_YELLOW}🔥${C_RESET} burn mode (auto-run SandboxDB task)? [y/N] " burn
+        args=("$name")
+        [[ "$yn"   =~ ^[yY] ]] && args+=(--full)
+        [[ "$burn" =~ ^[yY] ]] && args+=(--burn)
+        exec "$0" "${args[@]}" ;;
+      d|D)
+        name=$(pick_profile "delete which") || continue
+        read -rp "  ${C_RED}delete '$name'?${C_RESET} [y/N] " yn
+        if [[ "$yn" =~ ^[yY] ]]; then
+          rm -rf "${PROFILES_ROOT:?}/$name"
+          echo "  ${C_GREEN}✓${C_RESET} removed"
+        else
+          echo "  ${C_DIM}cancelled${C_RESET}"
+        fi
+        read -rp "  ${C_DIM}press enter…${C_RESET}" _ ;;
+      p|P)
+        name=$(pick_profile "set proxy for which") || continue
+        current=$(proxy_of "$name")
+        if [[ -n "$current" ]]; then
+          echo "  current: ${C_BOLD}$current${C_RESET}"
+        else
+          echo "  current: ${C_DIM}(none)${C_RESET}"
+        fi
+        read -rp "  new socks5 URL (empty = clear, '-' = keep): " url
+        if [[ "$url" == "-" ]]; then
+          echo "  ${C_DIM}unchanged${C_RESET}"
+        elif [[ -z "$url" ]]; then
+          rm -f "$PROFILES_ROOT/$name/proxy.conf"
+          echo "  ${C_GREEN}✓${C_RESET} cleared"
+        elif [[ "$url" =~ ^socks5h?:// ]]; then
+          echo "$url" > "$PROFILES_ROOT/$name/proxy.conf"
+          echo "  ${C_GREEN}✓${C_RESET} set to $url"
+        else
+          echo "  ${C_RED}✗${C_RESET} URL must start with socks5:// — not changed"
+        fi
+        read -rp "  ${C_DIM}press enter…${C_RESET}" _ ;;
+      [0-9]*)
+        local sel="${items[$((choice-1))]:-}"
+        [[ -z "$sel" ]] && continue
+        read -rp "  ${C_YELLOW}🔥${C_RESET} burn mode? [y/N] " burn
+        if [[ "$burn" =~ ^[yY] ]]; then exec "$0" "$sel" --burn
+        else exec "$0" "$sel"; fi ;;
+      *) ;;
+    esac
+  done
+}
+
+# ── Subcommands ─────────────────────────────────────────────────────────────
+case "${1:-}" in
+  ls|list) list_profiles; exit 0 ;;
+  rm|remove|delete)
+    [[ -z "${2:-}" ]] && die "usage: claude-sandbox rm <profile>"
+    [[ -d "$PROFILES_ROOT/$2" ]] || die "profile not found: $2"
+    rm -rf "$PROFILES_ROOT/$2"
+    echo "${C_GREEN}✓${C_RESET} removed profile: $2"
+    exit 0 ;;
+  proxy)
+    [[ -z "${2:-}" ]] && die "usage: claude-sandbox proxy <profile> [<url>|--unset]"
+    if [[ $# -eq 2 ]]; then
+      px=$(proxy_of "$2"); [[ -n "$px" ]] && echo "$px" || echo "${C_DIM}(no proxy)${C_RESET}"
+    else
+      set_proxy "$2" "$3"
+    fi
+    exit 0 ;;
+  -h|--help|help) usage; exit 0 ;;
+esac
+
+# No-args + tty: show menu
+if [[ $# -eq 0 && -t 0 && -t 1 ]]; then
+  mkdir -p "$PROFILES_ROOT"
+  menu
+fi
+
+# ── Parse flags / positional profile name ───────────────────────────────────
 FULL_MODE=0
 SAVE_SESSION=0
+BURN=0
+PROFILE_NAME=""
 CLAUDE_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --full) FULL_MODE=1; shift ;;
-    --save) SAVE_SESSION=1; shift ;;
-    *) CLAUDE_ARGS+=("$1"); shift ;;
+    --full)    FULL_MODE=1; shift ;;
+    --save)    SAVE_SESSION=1; shift ;;
+    --burn)    BURN=1; shift ;;
+    --no-menu) shift ;;
+    --)        shift; CLAUDE_ARGS+=("$@"); break ;;
+    -*)        CLAUDE_ARGS+=("$1"); shift ;;
+    *)
+      if [[ -z "$PROFILE_NAME" ]]; then PROFILE_NAME="$1"; shift
+      else CLAUDE_ARGS+=("$1"); shift; fi ;;
   esac
 done
 
-# Check bubblewrap
-if ! command -v bwrap &>/dev/null; then
-  echo "Error: bubblewrap not found" >&2
-  exit 1
+if [[ -n "$PROFILE_NAME" ]]; then
+  [[ "$PROFILE_NAME" =~ [/[:space:]] || "$PROFILE_NAME" == .* ]] && \
+    die "invalid profile name: $PROFILE_NAME"
 fi
 
-# Find claude binary
-CLAUDE_BIN=$(command -v claude 2>/dev/null)
-if [[ -z "$CLAUDE_BIN" ]]; then
-  echo "Error: claude not found" >&2
-  exit 1
-fi
+# ── Preflight ───────────────────────────────────────────────────────────────
+command -v bwrap >/dev/null  || die "bubblewrap (bwrap) not found"
+CLAUDE_BIN=$(command -v claude 2>/dev/null) || die "claude not found in PATH"
 CLAUDE_BIN=$(readlink -f "$CLAUDE_BIN")
 
-# Create sandbox directory structure
 mkdir -p "$SANDBOX_DIR"
 TEMP_DIR="$SANDBOX_DIR/temp-$$"
 mkdir -p "$TEMP_DIR"
 
-# Cleanup function
+PROFILE_DIR=""; PROFILE_NEW=0
+if [[ -n "$PROFILE_NAME" ]]; then
+  PROFILE_DIR="$PROFILES_ROOT/$PROFILE_NAME"
+  if [[ ! -d "$PROFILE_DIR" ]]; then
+    mkdir -p "$PROFILE_DIR/.claude"
+    PROFILE_NEW=1
+    info "created new profile: ${C_BOLD}$PROFILE_NAME${C_RESET}"
+  fi
+  WORKSPACE="$PROFILE_DIR/workspace"
+  mkdir -p "$WORKSPACE"
+else
+  # Ephemeral mode: use the caller's $PWD as workspace (shared RW)
+  WORKSPACE="$PWD"
+fi
+
+# ── Cleanup ─────────────────────────────────────────────────────────────────
+BRIDGE_PID=""
 cleanup() {
-  # Save session history if requested
   if [[ $SAVE_SESSION == 1 ]]; then
-    TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-    OUTPUT_FILE="$SANDBOX_DIR/output-$TIMESTAMP.jsonl"
-
-    # Find the most recent session file
-    LATEST_SESSION=$(find "$TEMP_DIR/.claude/projects" -name "*.jsonl" -type f 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
-
-    if [[ -n "$LATEST_SESSION" && -f "$LATEST_SESSION" ]]; then
-      cp "$LATEST_SESSION" "$OUTPUT_FILE"
-      echo "Session saved to: $OUTPUT_FILE"
-    else
-      echo "Warning: No session file found to save"
+    TS=$(date +%Y%m%d-%H%M%S)
+    OUT="$SANDBOX_DIR/output-$TS.jsonl"
+    LATEST=$(find "$CLAUDE_HOST_DIR/projects" -name "*.jsonl" -type f 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
+    if [[ -n "$LATEST" && -f "$LATEST" ]]; then
+      cp "$LATEST" "$OUT"; echo "session saved → $OUT"
     fi
   fi
-
-  # Clean up temp directory
+  [[ -n "$BRIDGE_PID" ]] && kill "$BRIDGE_PID" 2>/dev/null || true
   rm -rf "$TEMP_DIR"
-
-  # Clean up any directories created in workspace by Claude Code
-  rm -rf "$WORKSPACE/.claude" "$WORKSPACE/.local" "$WORKSPACE/.npm" "$WORKSPACE/.claude.json" 2>/dev/null
-
-  # Clean up old temp directories in .sandbox
-  if [[ -d "$SANDBOX_DIR" ]]; then
-    find "$SANDBOX_DIR" -mindepth 1 -maxdepth 1 -type d -name "temp-*" -exec rm -rf {} + 2>/dev/null
-  fi
+  rm -rf "$WORKSPACE/.claude" "$WORKSPACE/.local" "$WORKSPACE/.npm" "$WORKSPACE/.claude.json" 2>/dev/null || true
+  find "$SANDBOX_DIR" -mindepth 1 -maxdepth 1 -type d -name "temp-*" -exec rm -rf {} + 2>/dev/null || true
 }
+trap cleanup EXIT
 
-# Copy claude binary to temp
+# ── claude binary into sandbox ──────────────────────────────────────────────
 mkdir -p "$TEMP_DIR/.local/bin"
 cp "$CLAUDE_BIN" "$TEMP_DIR/.local/bin/claude"
 chmod +x "$TEMP_DIR/.local/bin/claude"
 
-# Extract API config from environment variables or settings.json
+# ── Auth (optional) ─────────────────────────────────────────────────────────
+# If env vars or host settings.json provide creds, we'll seed them. Otherwise
+# claude will run /login on first start; whatever it writes lives in the
+# profile dir and persists across runs.
 BASE_URL="${ANTHROPIC_BASE_URL:-}"
 AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-}"
-
 if [[ -z "$BASE_URL" || -z "$AUTH_TOKEN" ]] && [[ -f "$CLAUDE_HOME/settings.json" ]]; then
-  if [[ -z "$BASE_URL" ]]; then
-    BASE_URL=$(grep -o '"ANTHROPIC_BASE_URL"[[:space:]]*:[[:space:]]*"[^"]*"' "$CLAUDE_HOME/settings.json" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/')
-  fi
-  if [[ -z "$AUTH_TOKEN" ]]; then
-    AUTH_TOKEN=$(grep -o '"ANTHROPIC_AUTH_TOKEN"[[:space:]]*:[[:space:]]*"[^"]*"' "$CLAUDE_HOME/settings.json" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/')
-  fi
+  [[ -z "$BASE_URL" ]] && BASE_URL=$(grep -o '"ANTHROPIC_BASE_URL"[[:space:]]*:[[:space:]]*"[^"]*"' "$CLAUDE_HOME/settings.json" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/')
+  [[ -z "$AUTH_TOKEN" ]] && AUTH_TOKEN=$(grep -o '"ANTHROPIC_AUTH_TOKEN"[[:space:]]*:[[:space:]]*"[^"]*"' "$CLAUDE_HOME/settings.json" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/')
 fi
 
-# Validate credentials
-if [[ -z "$AUTH_TOKEN" ]]; then
-  echo "Error: ANTHROPIC_AUTH_TOKEN not found in environment or settings.json" >&2
-  exit 1
-fi
-
-# Setup .claude directory based on mode
-mkdir -p "$TEMP_DIR/.claude"
-
-if [[ $FULL_MODE == 1 ]]; then
-  # Full mode: copy entire .claude directory for consistent experience
-  if [[ -d "$CLAUDE_HOME" ]]; then
-    cp -r "$CLAUDE_HOME"/* "$TEMP_DIR/.claude/" 2>/dev/null || true
-
-    # Fix absolute paths in plugin JSON files
-    if [[ -f "$TEMP_DIR/.claude/plugins/installed_plugins.json" ]]; then
-      sed -i "s|$CLAUDE_HOME|/home/sandbox/.claude|g" "$TEMP_DIR/.claude/plugins/installed_plugins.json"
-    fi
-
-    if [[ -f "$TEMP_DIR/.claude/plugins/known_marketplaces.json" ]]; then
-      sed -i "s|$CLAUDE_HOME|/home/sandbox/.claude|g" "$TEMP_DIR/.claude/plugins/known_marketplaces.json"
-    fi
-  fi
-
-  # Copy .claude.json if it exists
-  if [[ -f "$HOME/.claude.json" ]]; then
-    cp "$HOME/.claude.json" "$TEMP_DIR/.claude.json"
-  fi
+# ── Sandbox .claude location ────────────────────────────────────────────────
+if [[ -n "$PROFILE_DIR" ]]; then
+  CLAUDE_HOST_DIR="$PROFILE_DIR/.claude"
+  CLAUDE_JSON_HOST="$PROFILE_DIR/.claude.json"
+  INIT_PROFILE=$PROFILE_NEW
 else
-  # Normal mode: minimal settings.json with only auth config
-  cat > "$TEMP_DIR/.claude/settings.json" <<EOF
+  CLAUDE_HOST_DIR="$TEMP_DIR/.claude"
+  CLAUDE_JSON_HOST="$TEMP_DIR/.claude.json"
+  INIT_PROFILE=1
+fi
+mkdir -p "$CLAUDE_HOST_DIR"
+
+if [[ $INIT_PROFILE == 1 ]]; then
+  if [[ $FULL_MODE == 1 ]]; then
+    if [[ -d "$CLAUDE_HOME" ]]; then
+      cp -r "$CLAUDE_HOME"/. "$CLAUDE_HOST_DIR/" 2>/dev/null || true
+      for f in plugins/installed_plugins.json plugins/known_marketplaces.json; do
+        [[ -f "$CLAUDE_HOST_DIR/$f" ]] && \
+          sed -i "s|$CLAUDE_HOME|/home/sandbox/.claude|g" "$CLAUDE_HOST_DIR/$f"
+      done
+    fi
+    [[ -f "$HOME/.claude.json" ]] && cp "$HOME/.claude.json" "$CLAUDE_JSON_HOST"
+  elif [[ -n "$AUTH_TOKEN" ]]; then
+    # Only seed settings.json when we actually have creds to seed.
+    cat > "$CLAUDE_HOST_DIR/settings.json" <<EOF
 {
   "env": {
     "ANTHROPIC_BASE_URL": "$BASE_URL",
@@ -124,9 +347,34 @@ else
   }
 }
 EOF
+  fi
+  # No creds available → leave $CLAUDE_HOST_DIR empty; claude will run /login
+  # on first launch and write its own credentials into the profile.
 fi
 
-# Build mounts
+# ── SOCKS5 → HTTP bridge (per-profile) ──────────────────────────────────────
+PROXY_PORT=""
+if [[ -n "$PROFILE_DIR" ]]; then
+  PROXY_URL=$(proxy_of "$PROFILE_NAME" || true)
+  if [[ -n "$PROXY_URL" ]]; then
+    command -v gost >/dev/null || die "gost not found (needed for SOCKS5 proxy).
+  install on Arch:  yay -S gost     (AUR)
+  or grab a binary: https://github.com/go-gost/gost/releases"
+    PROXY_PORT=$(find_free_port) || die "no free local port for proxy bridge"
+    gost -L "http://127.0.0.1:$PROXY_PORT" -F "$PROXY_URL" >/dev/null 2>&1 &
+    BRIDGE_PID=$!
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      timeout 0.2 bash -c "</dev/tcp/127.0.0.1/$PROXY_PORT" 2>/dev/null && break
+      sleep 0.1
+    done
+    if ! timeout 0.2 bash -c "</dev/tcp/127.0.0.1/$PROXY_PORT" 2>/dev/null; then
+      die "failed to start gost bridge"
+    fi
+    info "proxy bridge: ${C_GREEN}http://127.0.0.1:$PROXY_PORT${C_RESET} → $PROXY_URL"
+  fi
+fi
+
+# ── Mounts ──────────────────────────────────────────────────────────────────
 MOUNTS=(
   --ro-bind /usr /usr
   --ro-bind /etc /etc
@@ -139,25 +387,173 @@ MOUNTS=(
   --tmpfs /home
   --bind "$WORKSPACE" /workspace
   --ro-bind "$TEMP_DIR/.local" /home/sandbox/.local
-  --bind "$TEMP_DIR/.claude" /home/sandbox/.claude
+  --bind "$CLAUDE_HOST_DIR" /home/sandbox/.claude
 )
+[[ -d "$HOME/.local/bin" ]] && MOUNTS+=(--ro-bind "$HOME/.local/bin" /usr/local/bin)
+[[ -d "$HOME/.cargo/bin" ]] && MOUNTS+=(--ro-bind "$HOME/.cargo/bin" /home/sandbox/.cargo/bin)
+[[ -d /run/systemd/resolve ]] && MOUNTS+=(--ro-bind /run/systemd/resolve /run/systemd/resolve)
 
-# Mount user binaries if they exist
-[[ -d "$HOME/.local/bin" ]] && \
-  MOUNTS+=(--ro-bind "$HOME/.local/bin" /usr/local/bin)
+if [[ -n "$PROFILE_DIR" && ! -s "$CLAUDE_JSON_HOST" ]]; then echo '{}' > "$CLAUDE_JSON_HOST"; fi
+[[ -f "$CLAUDE_JSON_HOST" ]] && MOUNTS+=(--bind "$CLAUDE_JSON_HOST" /home/sandbox/.claude.json)
 
-[[ -d "$HOME/.cargo/bin" ]] && \
-  MOUNTS+=(--ro-bind "$HOME/.cargo/bin" /home/sandbox/.cargo/bin)
+# ── Optional env passthrough ────────────────────────────────────────────────
+EXTRA_ENV=()
+[[ -n "$BASE_URL" ]]   && EXTRA_ENV+=(--setenv ANTHROPIC_BASE_URL   "$BASE_URL")
+[[ -n "$AUTH_TOKEN" ]] && EXTRA_ENV+=(--setenv ANTHROPIC_AUTH_TOKEN "$AUTH_TOKEN")
+if [[ -n "$PROXY_PORT" ]]; then
+  EXTRA_ENV+=(
+    --setenv HTTPS_PROXY "http://127.0.0.1:$PROXY_PORT"
+    --setenv HTTP_PROXY  "http://127.0.0.1:$PROXY_PORT"
+    --setenv https_proxy "http://127.0.0.1:$PROXY_PORT"
+    --setenv http_proxy  "http://127.0.0.1:$PROXY_PORT"
+    --setenv ALL_PROXY   "http://127.0.0.1:$PROXY_PORT"
+    --setenv NO_PROXY    ""
+  )
+fi
 
-# Share network namespace for API access
-[[ -d /run/systemd/resolve ]] && \
-  MOUNTS+=(--ro-bind /run/systemd/resolve /run/systemd/resolve)
+# ── Burn mode: inject a long self-contained prompt ──────────────────────────
+if [[ $BURN == 1 ]]; then
+  read -r -d '' BURN_PROMPT <<'PROMPT' || true
+/ralph-loop:ralph-loop
+# 多智能体并行作战指令
 
-# Mount .claude.json if it exists (for full mode)
-[[ -f "$TEMP_DIR/.claude.json" ]] && \
-  MOUNTS+=(--bind "$TEMP_DIR/.claude.json" /home/sandbox/.claude.json)
+你是这个项目的**总指挥**，必须**最大化并行度**来加速产出。每一轮工作都遵循以下铁律：
 
-# Launch
+1. **每次必须在同一条消息里同时发起至少 5 个 Agent 子任务**（使用 Agent 工具，subagent_type 用 general-purpose 即可）。5 个是下限，目标是**单条消息里塞满并行 tool_use**。
+2. 不允许串行调用 Agent：禁止"先派一个、等它回来、再派下一个"。永远是"一口气派 N 个，等全部回来，再一口气派下一批 N 个"。
+3. 每个子任务的 prompt 都要写得**自给自足**（子 agent 看不到主线对话），明确告知它要写哪几个文件、文件路径、每个文件的具体内容要求和最低行数。
+4. 子任务回来后，你**不要回顾性总结**它们写了什么，直接基于它们的进度规划下一批 8+ 个子任务派发。
+5. 任何时候 PROGRESS.md 写完前都不允许停下休息或问用户问题。
+6. **token 经济**：子 agent 之间的工作要尽量正交（不同模块/不同 crate/不同文档），减少冲突重写。但完全允许"两个子 agent 写同一类型不同模块的代码"这种并行。
+
+# 工程任务：从零实现 SandboxDB
+
+我现在要你从零开始设计并**完整实现**一个名为 **SandboxDB** 的分布式键值数据库。所有产出物以源文件形式落到当前 workspace 目录里，不要把代码贴在对话里。整个工程不要求能编译运行（你也不需要执行任何构建命令），但要做到「另一个高级工程师拿到这堆文件就能照着继续推进」的工业级完整度。
+
+# 硬性约束
+- 实现语言：**Rust**（纯 Rust，不依赖 cargo/rustc 是否可用，你只写 .rs 文件）。允许在 Cargo.toml 中声明依赖，但不要尝试 `cargo build`。
+- 文件粒度：**至少 60 个源文件**，分布在合理的模块/crate 树下。任何单文件超过 600 行都要按职责拆分。
+- 代码体量：**总 Rust 代码行数不少于 8000 行**（不含空行和单行注释），且每个文件都要有充分实现，**严禁出现 `todo!()`、`unimplemented!()`、`// TODO`、空函数体、占位 stub**。如果某个细节确实复杂到难以一次写完，那就退一步给出一个朴素但能跑通逻辑的实现。
+- 文档：另外至少 15 个 Markdown 文档（架构、模块设计、协议规范、运维手册、故障演练、性能模型、安全模型、迁移指南、API 参考……）。
+- 测试：**每个模块都要有单元测试文件**（`#[cfg(test)] mod tests`），另外单独一个 `tests/` 目录放至少 10 个集成测试用例，模拟节点故障、网络分区、并发冲突等场景。
+- 不要询问我任何确认，**直接开干**，每完成一个里程碑就用一条简短输出汇报进度然后继续下一项。
+
+# 工程蓝图
+建议（但不限于）的目录结构：
+
+```
+sandboxdb/
+├── Cargo.toml                  # workspace 根，列出所有成员 crate
+├── README.md
+├── ARCHITECTURE.md
+├── docs/
+│   ├── design/
+│   │   ├── 00-overview.md
+│   │   ├── 01-storage-engine.md
+│   │   ├── 02-replication-raft.md
+│   │   ├── 03-sharding.md
+│   │   ├── 04-network-protocol.md
+│   │   ├── 05-transaction-model.md
+│   │   ├── 06-mvcc.md
+│   │   ├── 07-membership.md
+│   │   ├── 08-observability.md
+│   │   ├── 09-backup-restore.md
+│   │   └── 10-security.md
+│   ├── ops/
+│   │   ├── runbook.md
+│   │   ├── failure-drills.md
+│   │   └── capacity-planning.md
+│   └── api/
+│       ├── client-sdk.md
+│       └── admin-cli.md
+├── crates/
+│   ├── sandbox-core/           # 核心类型、错误、配置
+│   ├── sandbox-storage/        # LSM-tree 存储引擎（memtable / sstable / compaction / wal / bloom filter）
+│   ├── sandbox-replication/    # Raft 实现（leader election / log replication / snapshot / membership change）
+│   ├── sandbox-network/        # 自定义 TCP 协议帧、连接池、背压
+│   ├── sandbox-shard/          # 一致性哈希环、range-based sharding、rebalance
+│   ├── sandbox-txn/            # MVCC、两阶段提交、冲突检测
+│   ├── sandbox-server/         # 节点主程序（main.rs 加各种 service）
+│   ├── sandbox-client/         # 客户端 SDK（异步、连接管理、重试、熔断）
+│   ├── sandbox-cli/            # 管理命令行（节点加入退出、备份、查询拓扑）
+│   ├── sandbox-bench/          # 压测工具
+│   └── sandbox-test-utils/     # 测试用 mock 节点、故障注入框架
+└── tests/                      # 工程级集成测试
+    ├── crash_recovery.rs
+    ├── partition_tolerance.rs
+    ├── concurrent_writes.rs
+    ├── rebalance_under_load.rs
+    ├── snapshot_install.rs
+    ├── membership_change.rs
+    ├── compaction_correctness.rs
+    ├── txn_isolation.rs
+    ├── client_retry.rs
+    └── slow_disk.rs
+```
+
+# 实现要求细则
+1. **存储引擎**：写一个 LSM-tree，至少包含 SkipList memtable、WAL（带 checksum）、SSTable 编码（含 block index、bloom filter）、leveled compaction、读路径合并、墓碑回收。
+2. **复制**：手写 Raft（不要 `use raft`），核心算法严格按论文实现：term/voteFor/log entries、AppendEntries、RequestVote、commitIndex、安全性约束、log compaction 通过 InstallSnapshot。
+3. **网络**：自定义二进制帧（4 字节 magic + 4 字节 length + 1 字节 type + payload + 4 字节 crc32），完整的编解码器、连接管理、心跳、背压。
+4. **事务**：MVCC 时间戳由全局递增器分配（伪实现亦可），两阶段提交协调器，悲观与乐观两种锁路径都要写。
+5. **客户端**：异步 API（tokio 风格也行，不必真的 `tokio = ...`），失败重试、抖动退避、节点拓扑缓存与失效。
+6. **可观测**：每个 crate 都给出基于 trait 的 metrics hook、结构化日志事件枚举、tracing span 命名规范。
+
+# 文档要求
+- `ARCHITECTURE.md`：不少于 6000 字的工程总览，含 ASCII 系统图（多张），数据流走读，关键不变量列表。
+- 每个 `docs/design/0X-*.md`：单文不少于 2000 字，含至少 3 张 ASCII 图、5 段伪代码、10 条设计决策的权衡矩阵。
+- `docs/ops/runbook.md`：覆盖 20+ 个常见运维场景，每个都有命令示例和决策流程。
+- `docs/ops/failure-drills.md`：12 个完整故障演练剧本（触发条件、检测信号、自动降级、人工介入、恢复流程、复盘清单）。
+- `docs/api/client-sdk.md` 与 `docs/api/admin-cli.md`：完整接口签名、参数表、错误码、示例代码块。
+
+# 工作节奏（**全程多智能体并行**）
+
+按"波次"推进。每一波在同一条消息里并发派发 8-12 个 Agent 子任务，等全部回来后立刻发下一波。**禁止退化为串行调度**。
+
+**第 1 波**（架构/总览，并发 5）：每个子 agent 写一个文件
+- 子 agent A: 写 `sandboxdb/README.md`（≥3000 字）+ `Cargo.toml`（workspace 根）
+- 子 agent B: 写 `sandboxdb/ARCHITECTURE.md`（≥6000 字）
+- 子 agent C-E: 各负责若干份 `docs/design/0X-*.md`（每份 ≥2000 字）
+
+**第 2 波**（剩余设计文档 + 运维文档，并发 ≥10）：
+- 剩余 `docs/design/*.md`
+- 所有 `docs/ops/*.md`
+- 所有 `docs/api/*.md`
+每个文档独立一个子 agent。
+
+**第 3 波到第 5 波**（11 个 crate 实现，每波处理 4-5 个 crate，**每个 crate 内部再拆给 1-2 个子 agent**）：
+- 同一个 crate 可以拆成"主实现"和"单测"两个子任务并行
+- 不同 crate 之间永远并行，不允许"先做 storage 再做 network"
+
+**第 6 波**（集成测试 + bench，并发 ≥10）：每个测试文件一个子 agent。
+
+**第 7 波**（收尾）：单独一个子 agent 扫一遍 workspace 文件树，生成 `PROGRESS.md`（含每个文件的行数统计、按 crate 分组的目录树、未达标项的清单）。
+
+**关键约束**：每一波结束后，主线只做"派下一波"的简短规划（≤50 token 输出），绝不复述子 agent 的产出。所有内容必须落在文件里，主线对话只是调度记录。
+
+# 强约束（再次强调）
+- 任何「占位代码」「TODO」「unimplemented」「这里省略具体实现」都视为失败。如果某段实在写不下，**朴素实现 + 详细注释解释如何替换为更优版本** 总是比留空白强。
+- 不要问我「要不要继续」「是否需要展开」，**全程一次性输出，直到 PROGRESS.md 写完**。
+- 不要把所有内容贴回对话框，**只用 Write 工具落盘**，对话里只发简短进度汇报。
+
+# 完成信号
+只有当所有以下条件都满足时，才在回复末尾输出**字面字符串** `<promise>SANDBOXDB COMPLETE</promise>`：
+- `sandboxdb/PROGRESS.md` 存在
+- `PROGRESS.md` 列出 ≥60 个 Rust 源文件、≥15 个 Markdown 文档、≥10 个集成测试文件
+- 没有任何文件包含 `todo!()` / `unimplemented!()` / `// TODO` / `这里省略`
+
+任何一条不满足都**不要**输出 promise 标签——继续迭代。Ralph loop 会自动喂回 prompt 让你看着已有进度继续干。
+
+现在开始。第一步：写 README.md 和 Cargo.toml 与 ARCHITECTURE.md。
+
+--max-iterations 20 --completion-promise "SANDBOXDB COMPLETE"
+PROMPT
+  CLAUDE_ARGS+=("$BURN_PROMPT")
+  info "${C_YELLOW}🔥 burn mode${C_RESET} — multi-agent parallel SandboxDB build, ralph-loop x20"
+fi
+
+# ── Launch ──────────────────────────────────────────────────────────────────
+set +e
 bwrap \
   "${MOUNTS[@]}" \
   --unshare-pid \
@@ -168,16 +564,8 @@ bwrap \
   --chdir /workspace \
   --setenv HOME /home/sandbox \
   --setenv PATH "/home/sandbox/.local/bin:/usr/local/bin:/home/sandbox/.cargo/bin:/usr/bin:/bin" \
-  --setenv ANTHROPIC_BASE_URL "$BASE_URL" \
-  --setenv ANTHROPIC_AUTH_TOKEN "$AUTH_TOKEN" \
+  "${EXTRA_ENV[@]}" \
   --unsetenv CLAUDECODE \
-  /home/sandbox/.local/bin/claude "${CLAUDE_ARGS[@]}"
-
-# Capture exit code
+  /home/sandbox/.local/bin/claude --dangerously-skip-permissions "${CLAUDE_ARGS[@]}"
 EXIT_CODE=$?
-
-# Trigger cleanup manually
-cleanup
-
-# Exit with the same code as claude
 exit $EXIT_CODE
