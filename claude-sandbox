@@ -419,7 +419,6 @@ fi
 # ── Burn mode: inject a long self-contained prompt ──────────────────────────
 if [[ $BURN == 1 ]]; then
   read -r -d '' BURN_PROMPT <<'PROMPT' || true
-/ralph-loop:ralph-loop
 ultrathink
 
 # 多智能体并行作战指令（极限 token 消耗模式）
@@ -529,8 +528,8 @@ sandboxdb/
 
 **主线说话原则**：每波结束主线只输出 ≤50 token 的调度记录（"派 Wave X 完成，发 Wave X+1"），**禁止复述子 agent 的产出**。
 
-# 完成信号
-只有当**全部**以下条件都满足时，才在回复末尾输出**字面字符串** `<promise>SANDBOXDB COMPLETE</promise>`：
+# 完成标准
+以下条件**全部**满足前都不许停下，必须基于现有文件继续推进**下一个 Wave**：
 - `sandboxdb/PLAN.md` 存在且 ≥12000 字
 - `sandboxdb/WAVES.md` 存在且列出 ≥40 个 wave
 - `sandboxdb/PROGRESS.md` 存在
@@ -541,7 +540,7 @@ sandboxdb/
 - SandboxSDK 五种语言（rust/go/python/typescript/java）目录都有完整实现
 - 没有任何文件包含 `todo!()` / `unimplemented!()` / `// TODO` / `这里省略` / 空函数体
 
-任何一条不满足都**绝对不要**输出 promise 标签——继续迭代。Ralph loop 会自动喂回 prompt 让你看着已有进度接着干。哪怕你觉得"差不多了"也不要偷停。Ralph 每次喂回这段 prompt 都意味着上一轮没完成，请直接基于现有文件继续推进**下一个 Wave**。
+哪怕你觉得"差不多了"也不要偷停。
 
 # 现在立刻开始
 
@@ -550,11 +549,9 @@ sandboxdb/
 - **已存在** → 读取 WAVES.md 找到第一个尚未完成的 Wave，立即在同一条消息内**并行派发**该 Wave 的所有子任务（每个 prompt 以 `ultrathink` 开头）。
 
 绝对不要先汇报"我打算这么干"——直接发工具调用。
-
---max-iterations 80 --completion-promise "SANDBOXDB COMPLETE"
 PROMPT
   CLAUDE_ARGS+=("$BURN_PROMPT")
-  info "${C_YELLOW}🔥 burn mode${C_RESET} — Plan-driven multi-agent DistribuOS build, ralph-loop x80"
+  info "${C_YELLOW}🔥 burn mode${C_RESET} — Plan-driven multi-agent DistribuOS build"
 fi
 
 # ── Launch ──────────────────────────────────────────────────────────────────
