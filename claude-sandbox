@@ -3,7 +3,17 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-CLAUDE_SANDBOX_HOME="${CLAUDE_SANDBOX_HOME:-$SCRIPT_DIR}"
+# Default profile location:
+#   - If the script sits in a dev checkout (writable dir containing profiles/,
+#     .git, or PKGBUILD), keep profiles next to it for backward compat.
+#   - Otherwise (installed to ~/.local/bin, /usr/bin, ...), use XDG data dir.
+if [[ -z "${CLAUDE_SANDBOX_HOME:-}" ]]; then
+  if [[ -w "$SCRIPT_DIR" ]] && [[ -d "$SCRIPT_DIR/profiles" || -d "$SCRIPT_DIR/.git" || -f "$SCRIPT_DIR/PKGBUILD" ]]; then
+    CLAUDE_SANDBOX_HOME="$SCRIPT_DIR"
+  else
+    CLAUDE_SANDBOX_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/claude-sandbox"
+  fi
+fi
 CLAUDE_HOME="$HOME/.claude"
 SANDBOX_DIR="$CLAUDE_SANDBOX_HOME/.sandbox"
 PROFILES_ROOT="$CLAUDE_SANDBOX_HOME/profiles"

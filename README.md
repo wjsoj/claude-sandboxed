@@ -109,7 +109,7 @@ claude-sandbox <profile> -- <claude args>   # forward extra args to claude
 
 ## Profiles
 
-Profiles live in `<install-dir>/profiles/<name>/`. Override with `CLAUDE_SANDBOX_HOME=/some/path` if you want a global location.
+Profiles live in `${XDG_DATA_HOME:-~/.local/share}/claude-sandbox/profiles/<name>/` when the script is installed to a system location (`~/.local/bin`, `/usr/bin`, …), or next to the script in a dev checkout (when `profiles/`, `.git`, or `PKGBUILD` is present alongside). Override with `CLAUDE_SANDBOX_HOME=/some/path`.
 
 ```
 profiles/<name>/
