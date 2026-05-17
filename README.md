@@ -42,19 +42,31 @@ Make sure `claude --version` works in your shell before launching the sandbox �
 
 ## Install
 
-Pick one:
+The recommended installer creates a self-contained `claude-sandbox/` folder in the **current directory** (script + profiles + sandbox cache all live inside), then symlinks the script into `~/.local/bin/` so it's on `PATH`.
 
 ```bash
-# International
-curl -fsSL https://raw.githubusercontent.com/wjsoj/claude-sandboxed/main/claude-sandbox \
-  -o ~/.local/bin/claude-sandbox && chmod +x ~/.local/bin/claude-sandbox
+# International — run from wherever you want the install folder created
+cd ~/apps   # or any directory you like
+curl -fsSL https://raw.githubusercontent.com/wjsoj/claude-sandboxed/main/install.sh | bash
 
 # China mainland (mirror)
-curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/wjsoj/claude-sandboxed/main/claude-sandbox \
-  -o ~/.local/bin/claude-sandbox && chmod +x ~/.local/bin/claude-sandbox
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/wjsoj/claude-sandboxed/main/install.sh \
+  | CLAUDE_SANDBOX_INSTALL_URL=https://gh-proxy.com/https://raw.githubusercontent.com/wjsoj/claude-sandboxed/main/claude-sandbox bash
 ```
 
-Arch users can also `makepkg -si` against the included `PKGBUILD`.
+Resulting layout:
+
+```
+<cwd>/claude-sandbox/
+├── claude-sandbox            # the script
+└── profiles/                 # data lives here
+
+~/.local/bin/claude-sandbox   # symlink → <cwd>/claude-sandbox/claude-sandbox
+```
+
+Re-run the installer at any time to overwrite the script in place; profiles are preserved. Or just `claude-sandbox update` once installed.
+
+Env overrides: `CLAUDE_SANDBOX_BIN_DIR` (default `~/.local/bin`), `CLAUDE_SANDBOX_INSTALL_URL` (script source). Arch users can also `makepkg -si` against the included `PKGBUILD`.
 
 ## First-run walkthrough
 
@@ -109,7 +121,7 @@ claude-sandbox <profile> -- <claude args>   # forward extra args to claude
 
 ## Profiles
 
-Profiles live in `${XDG_DATA_HOME:-~/.local/share}/claude-sandbox/profiles/<name>/` when the script is installed to a system location (`~/.local/bin`, `/usr/bin`, …), or next to the script in a dev checkout (when `profiles/`, `.git`, or `PKGBUILD` is present alongside). Override with `CLAUDE_SANDBOX_HOME=/some/path`.
+Profiles live in `<install-dir>/profiles/<name>/` — the folder created by `install.sh` (or your git checkout). If the script is dropped somewhere without a sibling `profiles/` directory (e.g. naked `cp` into `/usr/bin`), it falls back to `${XDG_DATA_HOME:-~/.local/share}/claude-sandbox/profiles/`. Override anywhere with `CLAUDE_SANDBOX_HOME=/some/path`.
 
 ```
 profiles/<name>/

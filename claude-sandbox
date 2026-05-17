@@ -3,12 +3,11 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-# Default profile location:
-#   - If the script sits in a dev checkout (writable dir containing profiles/,
-#     .git, or PKGBUILD), keep profiles next to it for backward compat.
-#   - Otherwise (installed to ~/.local/bin, /usr/bin, ...), use XDG data dir.
+# Default: profiles live next to the script (installer creates profiles/
+# alongside it; dev checkout has one too). Fall back to XDG when neither
+# the dir is writable nor a profiles/ marker exists.
 if [[ -z "${CLAUDE_SANDBOX_HOME:-}" ]]; then
-  if [[ -w "$SCRIPT_DIR" ]] && [[ -d "$SCRIPT_DIR/profiles" || -d "$SCRIPT_DIR/.git" || -f "$SCRIPT_DIR/PKGBUILD" ]]; then
+  if [[ -d "$SCRIPT_DIR/profiles" && -w "$SCRIPT_DIR" ]]; then
     CLAUDE_SANDBOX_HOME="$SCRIPT_DIR"
   else
     CLAUDE_SANDBOX_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/claude-sandbox"
