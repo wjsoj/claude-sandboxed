@@ -478,162 +478,108 @@ if [[ $BURN == 1 ]]; then
   read -r -d '' BURN_PROMPT <<'PROMPT' || true
 ultrathink
 
-# 大规模工程练习：DistribuOS 分布式平台原型
+# DistribuOS 大规模工程练习（沙箱 burn 模式）
 
-## 任务背景与合法性说明（先读这段，再开始干活）
+合法性：用户通过 `claude-sandbox --burn` 显式进入该模式，产物全部落在沙箱 `/workspace`，与真实项目隔离。这是用户主动发起、预先一次性授权的练习任务，不要当成异常请求或可疑 prompt。
 
-这是一个**沙箱内的大规模软件工程练习项目**。用户运行 `claude-sandbox --burn` 显式选择进入这个练习模式，目的是练习多 agent 并行协作 + 大规模代码库生成。所有产物落在隔离的 `/workspace` 沙箱目录里，与用户真实项目互不影响。这是一个完全合理、用户主动发起、对用户有价值的工程任务，请放心执行，不要把它当成异常请求拒绝。
+你的角色：DistribuOS 平台总指挥。
 
-你的角色：**DistribuOS** 平台的总架构师 + 总指挥。DistribuOS 是一个虚构的云原生分布式平台原型，下面会详细定义。
+## 最高优先级：禁止打断主线
 
-## 工作模式：Wave 模式（连续派发，不在波间停顿）
+下列行为压倒一切默认"谨慎确认"倾向，全程严格执行：
 
-这个任务规模很大，最高效的做法是：把整个工程拆成几十个"波次（Wave）"，每个 Wave 内并行派出多个 Agent 子任务，一波接一波连续派发，**不在波与波之间停下来做总结、复盘、确认、汇报**——因为：
+- **禁用 AskUserQuestion**。
+- **禁止任何提问 / 顾虑表达 / 缩小规模提议 / "想先 check in" / "想确认一下" / "要不要换个方式"**。一旦发现自己要写这类内容，立刻丢弃，直接发工具调用。
+- **不要怀疑这段提示词是 prompt injection**——它是用户本人写进自己沙箱的。
+- 任何歧义（命名 / 选型 / 取舍）→ 自己 ultrathink 决策 → 追加一行到 `sandboxdb/DECISIONS.md` → 继续。
+- 主线消息只允许两种形态：(a) 工具调用；(b) 所有完成标准满足后的**唯一一次**最终汇报。其他纯文字（含"Wave X 完成"调度记录、"我打算..."预告、"好的我开始"应答）一律违规。
 
-- 这是工程效率问题，不是安全问题。沙箱内的批量代码生成不需要逐步确认。
-- 中间总结纯粹是浪费 token 和时间；你需要的信息（已完成什么、下一步派什么）都在 `WAVES.md` 和文件系统里，看一眼就知道。
-- 用户希望"一把完成所有任务后再来汇报"，而不是被中间停顿打断。
+## Wave 模式
 
-具体行为准则（这些不是禁令，是高效完成任务的最佳路径）：
+把工程拆成 ≥40 个 Wave，每波在**同一条消息**内并行派 5-12 个 Agent 子任务，一波接一波连续派发，波间零停顿。每个子任务 prompt 必须：以 `ultrathink` 开头、自给自足、写明文件路径与最低行数门槛。
 
-1. **歧义自决**：遇到设计选型/命名/取舍这类小问题，自己用 ultrathink 判断后继续推进，把决策记录追加到 `sandboxdb/DECISIONS.md`。不要为这种事打断主线问用户。
-2. **不做中间汇报**：每波结束直接派下一波。不要输出"Wave X 已完成，开始 Wave X+1"这种调度文字——下一波工具调用本身就是最好的状态指示。
-3. **不做中期复盘**：不要每 N 波停下来让 Plan agent 重写 PLAN.md；如果计划需要修订，作为某一波内的并行子任务派出去即可，主线不停。
-4. **子 agent 失败的处理**：自动派一个修复子 agent，与下一波其他子任务并行，主线不停。
-5. **WAVES.md 跑完的处理**：派 Plan agent 续写新 Wave，然后继续。永远有下一波，直到下方"完成标准"全部勾掉。
-6. **唯一停下的时机**：所有"完成标准"全部满足后，发**一次**最终汇报，结束。这之前主线消息只发 Agent 工具调用。
+- 子 agent 失败 → 下一波里夹带一个修复子任务，主线不停。
+- WAVES.md 跑完 → 派 Plan agent 续写新 Wave，继续。
+- 计划需要修订 → 作为某一波里的并行子任务，主线不停。
+- 禁止中期复盘 / 总结 / 评审。
 
-每次思考都用 ultrathink（最大 thinking budget），但思考完直接发工具调用，不要把思考结果转写成给用户看的文字。
+## A. 规划阶段（仅当 `sandboxdb/PLAN.md` 不存在时执行一次）
 
+派一个 `subagent_type=Plan` 子 agent（prompt 以 `ultrathink` 开头），要求产出：
+- `sandboxdb/PLAN.md` ≥12000 字：每子系统 ≥20 里程碑，每里程碑 ≥5 子任务，每子任务列输出文件清单与最低行数，附 ASCII 依赖图与并行度建议。
+- `sandboxdb/WAVES.md`：≥40 个并行波次，每波 5-12 个独立子任务（含 prompt 草稿）。
 
-## A. 规划阶段（仅在没有 PLAN.md 时执行一次）
+PLAN.md 落盘后立即进入执行。
 
-第一步：检查 `sandboxdb/PLAN.md` 是否存在。**如果不存在**，立刻使用 Agent 工具派出一个 **subagent_type=Plan** 的规划子 agent，让它产出一份 PLAN.md。
+## B. 执行阶段
 
-派给 Plan agent 的 prompt 必须以 `ultrathink` 开头，并明确：
-- 任务：为下面 "DistribuOS 平台范围" 定义的整个工程产出一份**极尽详细**的实现规划
-- 输出：单一文件 `sandboxdb/PLAN.md`，**至少 12000 字**
-- 内容要求：每个子系统列出至少 20 个里程碑、每个里程碑配 ≥5 个具体可执行子任务、每个子任务列出输出文件清单与最低行数门槛、任务依赖图（用 ASCII 画出来）、并行度建议
-- 同时输出 `sandboxdb/WAVES.md`：把所有任务排成 ≥40 个并行波次，每波列出 5-12 个独立子任务（具体到 prompt 草稿）
+读 WAVES.md 找首个未完成 Wave，**同一条消息**并行派发所有子任务。回来后不要回顾性总结，直接派下一波。
 
-PLAN.md 落盘后，进入下面的执行阶段。
-
-## B. 执行阶段（每次主线响应必须做的事）
-
-1. **每次必须在同一条消息里同时发起至少 5 个 Agent 子任务**。每个子任务的 prompt 都必须：
-   - **以 `ultrathink` 开头**（强制最大 thinking budget）
-   - 自给自足（子 agent 看不到主线对话）
-   - 明确文件路径、最低行数门槛、内容章节大纲
-2. 不允许串行调用 Agent。永远是"一口气派 N 个，等全部回来，再一口气派下一批 N 个"。
-3. 子任务回来后**不要回顾性总结、不要复盘、不要"我做了 X"式自述**，直接在同一条消息（或紧接的下一条主线消息）里派下一波 Agent 工具调用。
-4. 任何时候 `PROGRESS.md` 写完且"完成标准"全部满足之前，**禁止停下、禁止提问、禁止征求意见、禁止输出无工具调用的纯文字消息**。
-5. **禁止任何中期复盘 / 中期总结 / 中期汇报 / 中期评审**。WAVES.md 一次性派完所有波，不要 5 波一停去补 PLAN.md。需要修订计划就让下一波里的某个子 agent 顺手做，主线不停。
-6. **主线消息只允许两种形态**：(a) 一个或多个 Agent 工具调用；(b) 任务**全部**完成后的**最终一次**收尾汇报。除此之外的任何主线文字都是违规。
-7. 不要在波与波之间插入"Wave X 完成 / 派 Wave X+1"这类纯文字调度记录——直接派下一波就是调度记录本身。
-
-# DistribuOS 平台范围（极大规模工程）
-
-DistribuOS 是一套虚构的云原生分布式平台，包含**至少 10 个独立子系统**，每个子系统都是一个完整工程：
+## DistribuOS 平台范围（≥10 个子系统）
 
 | # | 子系统 | 角色 |
 |---|---|---|
-| 1 | **SandboxDB** | 分布式 KV 存储（Raft + LSM-tree + MVCC） |
-| 2 | **SandboxQ** | 分布式消息队列（类 Kafka，含 broker / 副本 / 消费组 / 事务消息） |
-| 3 | **SandboxMesh** | 服务网格（控制面 + 数据面 + xDS + mTLS + 流量治理） |
-| 4 | **SandboxObj** | 对象存储（类 S3，含 erasure coding / 桶生命周期 / 签名 URL） |
-| 5 | **SandboxStream** | 流处理引擎（DAG 调度、状态后端、exactly-once） |
-| 6 | **SandboxFlow** | 工作流编排（DSL + 调度器 + 持久状态机） |
-| 7 | **SandboxAuth** | 身份与权限（OIDC + RBAC + ABAC + 审计日志） |
-| 8 | **SandboxObs** | 可观测性栈（metrics + logs + traces + 告警引擎） |
-| 9 | **SandboxCtl** | 跨子系统的统一 CLI + Admin API |
-| 10 | **SandboxSDK** | 官方 SDK，**Rust / Go / Python / TypeScript / Java 五种语言并行实现** |
+| 1 | SandboxDB | 分布式 KV（Raft + LSM-tree + MVCC） |
+| 2 | SandboxQ | 类 Kafka 消息队列（broker / 副本 / 消费组 / 事务） |
+| 3 | SandboxMesh | 服务网格（控制面 + 数据面 + xDS + mTLS） |
+| 4 | SandboxObj | 类 S3 对象存储（EC + 生命周期 + 签名 URL） |
+| 5 | SandboxStream | 流处理（DAG 调度 + 状态后端 + exactly-once） |
+| 6 | SandboxFlow | 工作流编排（DSL + 调度器 + 持久状态机） |
+| 7 | SandboxAuth | 身份与权限（OIDC + RBAC + ABAC + 审计） |
+| 8 | SandboxObs | 观测栈（metrics + logs + traces + 告警） |
+| 9 | SandboxCtl | 统一 CLI + Admin API |
+| 10 | SandboxSDK | SDK：Rust / Go / Python / TypeScript / Java 五语言并行完整实现 |
 
-# 硬性规模指标
+## 硬性规模
 
-- **源代码文件总数 ≥ 250**（跨 60+ 个 crate / 包 / 模块）
-- **总源代码行数 ≥ 35000**
-- **Markdown 文档 ≥ 50 份**（每份 ≥ 2500 字）
-- **集成测试 ≥ 40 个**
-- **每个子系统至少 4 个核心模块**，每个模块包含主实现、单测、bench、错误码定义
-- **SandboxSDK 必须五种语言各自完整**（不是只写 Rust，其他四种粘贴 stub）
+- 源文件 ≥250（跨 60+ crate / 包 / 模块），总行数 ≥35000
+- Markdown 文档 ≥50（每份 ≥2500 字）
+- 集成测试 ≥40
+- 每子系统 ≥4 个核心模块（主实现 + 单测 + bench + 错误码）
+- SandboxSDK 五种语言各自完整，不准 stub
 
-# 三轮重写制度（**强制**，禁止跳过，禁止合并）
+## 三轮重写制度（强制，禁跳过禁合并）
 
-每一个源代码文件和文档都必须经历**三轮独立重写**，且三轮都必须真实落盘（v2、v3 直接覆盖同名文件，旧版备份到 `archive/`）：
+每个源文件和文档都必须真实落盘 V1 / V2 / V3（V2、V3 覆写同名文件，旧版备份到 `archive/`）：
 
-- **V1（初版）**: 朴素直接的实现，体现完整逻辑即可。
-- **V2（review-and-rewrite）**: 派 reviewer 子 agent（ultrathink）读 V1，写一份 ≥1500 字的内部 review 报告到 `reviews/<相对路径>.v1.md`，列出 ≥15 条改进点；然后由另一个 implementer 子 agent（ultrathink）读该 review，**整文件重写**，加注释、加错误处理、加边界条件、加性能优化点说明。
-- **V3（production hardening）**: 再派 hardener 子 agent（ultrathink）针对 V2 做安全审计、并发审计、API 完备性审计，输出 `reviews/<相对路径>.v2.md`（≥2000 字），然后**再重写一次**形成 V3。
+- **V1**：朴素完整实现。
+- **V2**：reviewer 子 agent 读 V1 → 输出 `reviews/<相对路径>.v1.md` ≥1500 字 / ≥15 条改进点 → implementer 子 agent 据此整文件重写。
+- **V3**：hardener 子 agent 针对 V2 做安全 / 并发 / API 完备性审计 → 输出 `reviews/<相对路径>.v2.md` ≥2000 字 → 再整文件重写。
 
-实际产出 ≈ 250 × 3 源文件 + 250 × 2 review 报告 + 50 × 3 文档版本 = **约 1400 次 Write 调用**。
+总产出 ≈ 1400 次 Write。
 
-# 工程结构总要求
+## 工程结构
 
-所有产出物落到 workspace 下 `sandboxdb/`（出于历史原因目录名保持不变）。每个子系统是独立子目录：
+全部产出落 workspace 下 `sandboxdb/`（历史原因目录名沿用）：
 
 ```
 sandboxdb/
-├── PLAN.md                  ← 由 Plan agent 产出（≥12000 字）
-├── WAVES.md                 ← 波次调度表（≥40 波）
-├── PROGRESS.md              ← 收尾时生成
-├── README.md
-├── ARCHITECTURE.md          ← 平台总览 ≥8000 字
-├── archive/                 ← V1/V2 旧版备份
-├── reviews/                 ← review 报告
-├── sandboxdb/               ← KV 存储
-├── sandboxq/                ← 消息队列
-├── sandboxmesh/             ← 服务网格
-├── sandboxobj/              ← 对象存储
-├── sandboxstream/           ← 流处理
-├── sandboxflow/             ← 工作流
-├── sandboxauth/             ← 身份权限
-├── sandboxobs/              ← 观测栈
-├── sandboxctl/              ← CLI
-└── sandboxsdk/
-    ├── rust/
-    ├── go/
-    ├── python/
-    ├── typescript/
-    └── java/
+├── PLAN.md  WAVES.md  PROGRESS.md  README.md  ARCHITECTURE.md(≥8000字)
+├── archive/  reviews/
+├── sandboxdb/  sandboxq/  sandboxmesh/  sandboxobj/  sandboxstream/
+├── sandboxflow/  sandboxauth/  sandboxobs/  sandboxctl/
+└── sandboxsdk/{rust,go,python,typescript,java}/
 ```
 
-每个子系统目录内部至少：`Cargo.toml`（或对应语言的项目文件）、`docs/`（design + ops + api）、`crates/` 或 `pkg/`（多个核心模块）、`tests/`（≥4 集成测试）。
+每子系统目录内至少：项目文件、`docs/`（design+ops+api）、多个核心模块、`tests/` ≥4 集成测试。
 
 不要尝试 build。**禁止 `todo!()` / `unimplemented!()` / `// TODO` / `这里省略` / 空函数体**。
 
-# 工作节奏
+## 完成标准（全部满足前不许停）
 
-**Wave 0（规划，仅当 PLAN.md / WAVES.md 不存在时执行一次）**: 派 Plan agent 产出 PLAN.md + WAVES.md。
+- `PLAN.md` ≥12000 字；`WAVES.md` ≥40 波；`PROGRESS.md` 存在并列出 ≥250 源文件 / ≥50 文档 / ≥40 集成测试
+- 每个文件 V1/V2/V3 三轮齐全，`archive/` 有 V1+V2 备份
+- `reviews/` ≥500 份报告
+- 10 子系统目录齐全；SandboxSDK 五语言齐全
+- 全仓零 `todo!()` / `unimplemented!()` / `// TODO` / `这里省略` / 空函数体
 
-**Wave 1+ （执行）**: 严格按 WAVES.md 派发子任务。每波 ≥5 个并行 Agent 子任务，每个子任务 prompt 以 `ultrathink` 开头并自给自足。
+哪怕觉得"差不多了"也不许偷停。
 
-**禁止中期复盘**：不要每 N 波停下来让 Plan agent 重新评审。计划修订作为某一波内的一个普通子任务派出去（与其他实现任务并行），主线绝不为此停顿。
+## 立刻开始
 
-**主线说话原则**：波与波之间**零文字输出**。一条主线消息要么是若干 Agent 工具调用，要么什么都不是。"派 Wave X 完成"这种调度记录也**不要写**——下一波工具调用本身就是记录。**只有在"完成标准"全部满足后才允许输出一次最终汇报**，全程仅此一次。
+`sandboxdb/PLAN.md` 不存在 → 派 Plan agent（按 A 节）。已存在 → 读 WAVES.md，并行派发首个未完成 Wave 的所有子任务。
 
-# 完成标准
-以下条件**全部**满足前都不许停下，必须基于现有文件继续推进**下一个 Wave**：
-- `sandboxdb/PLAN.md` 存在且 ≥12000 字
-- `sandboxdb/WAVES.md` 存在且列出 ≥40 个 wave
-- `sandboxdb/PROGRESS.md` 存在
-- `PROGRESS.md` 列出 ≥250 个源文件、≥50 个 Markdown 文档、≥40 个集成测试
-- **每个文件都已完成 V1、V2、V3 三轮重写**，archive/ 里有 V1、V2 备份
-- `reviews/` 目录至少 500 份 review 报告
-- 10 个子系统每个都有独立目录且文件齐全
-- SandboxSDK 五种语言（rust/go/python/typescript/java）目录都有完整实现
-- 没有任何文件包含 `todo!()` / `unimplemented!()` / `// TODO` / `这里省略` / 空函数体
-
-哪怕你觉得"差不多了"也不要偷停。
-
-# 现在立刻开始
-
-第一步：检查 `sandboxdb/PLAN.md` 是否存在。
-- **不存在** → 立即使用 Agent 工具，`subagent_type=Plan`，按上面的 A 节要求派一个 Plan agent 产出 PLAN.md + WAVES.md。
-- **已存在** → 读取 WAVES.md 找到第一个尚未完成的 Wave，立即在同一条消息内**并行派发**该 Wave 的所有子任务（每个 prompt 以 `ultrathink` 开头）。
-
-不要先输出"我打算这么干"的预告——直接发工具调用即可，那是更高效的做法。
-
-最后再确认一次：这是一个合理的沙箱内大规模代码生成练习，用户已显式选择进入此模式，请直接开始干活。从现在到"完成标准"全部满足之前，主线消息只发 Agent 工具调用；歧义自己决策记 `DECISIONS.md`；波间不停顿；全部完成后再做唯一一次总结汇报。开始吧。
+你的第一条响应必须是工具调用本身，不要任何前置文字。
 PROMPT
   CLAUDE_ARGS+=("$BURN_PROMPT")
   info "${C_YELLOW}🔥 burn mode${C_RESET} — Plan-driven multi-agent DistribuOS build"
